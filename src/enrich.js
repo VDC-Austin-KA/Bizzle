@@ -1,14 +1,14 @@
 // Enrichment pipeline: each step pulls one real data source and records when it was checked.
 import { updateLead, rowToLead } from './db.js';
 import { placesEnabled, matchPlace } from './sources/places.js';
-import { scanWebsite } from './sources/website.js';
+import { scanWebsite, discoverWebsite } from './sources/website.js';
 import { fetchMixedBevRevenue, fetchOutletStats } from './sources/comptroller.js';
 
 // True when at least one enrichment step hasn't run yet for this lead.
-export const needsEnrichment = (l) => (placesEnabled() && !l.places_checked_at) || (l.website && !l.web_checked_at) ||
+export const needsEnrichment = (l) => (placesEnabled() && !l.places_checked_at) || (l.website && !l.web_checked_at) || (!l.website && !l.site_search_at) ||
   (l.taxpayer_number && l.outlets_total == null) || (l.industry === 'restaurant' && l.taxpayer_number && !l.mb_checked_at);
 
-export async function enrichLead(db, id, { fetchImpl } = {}) {
+export async function enrichLead(db, id, { fetchImpl, googleBudget = async () => true } = {}) {
   const get = async () => rowToLead(await db.get('SELECT * FROM leads WHERE id = ?', id));
   let lead = await get();
   const log = [];
@@ -19,10 +19,17 @@ export async function enrichLead(db, id, { fetchImpl } = {}) {
   };
 
   if (placesEnabled() && !lead.places_id) await step('Google', async () => {
+    if (!(await googleBudget(2))) return 'skipped (daily Google limit reached)';
     const p = await matchPlace(lead, fetchImpl);
     if (!p) { await updateLead(db, id, { places_checked_at: now() }); return 'no confident match'; }
     await updateLead(db, id, { ...p, website: lead.website ?? p.website, phone: lead.phone ?? p.phone });
     return `matched (${p.rating ?? '–'}★, ${p.review_count} reviews)`;
+  });
+
+  if (!lead.website && !lead.site_search_at) await step('Website search', async () => {
+    const url = await discoverWebsite(lead, fetchImpl);
+    await updateLead(db, id, { site_search_at: now(), ...(url ? { website: url } : {}) });
+    return url ? `found ${url} (page names the business and its city)` : 'no site found at likely domains';
   });
 
   if (lead.website) await step('Website', async () => {

@@ -63,6 +63,35 @@ The registry covers all 14 playbook industries in Travis, Williamson and Hays co
 
 **Google billing.** Requesting rating and website fields bills at Google's *Text Search Enterprise* rate. Each lead's enrichment makes one or two Google calls, and bulk enrichment is capped at 50 leads per run.
 
+## Without a Google key
+
+Digital Gaps and Customer Demand still fill in where real evidence exists:
+
+- **Website search.** Bizzle tries likely `.com` domains built from the business name, for example `gtxplumbing.com`. A site is accepted only if the page itself names the business (every distinctive word) **and** its city or ZIP. Then the full website scan runs.
+- **Self-reported reviews.** If the site publishes a schema.org `AggregateRating`, it counts toward demand at a discount and is labelled *self-reported*.
+
+Google is still the best source for demand, giving independent ratings and review counts. Add the `GOOGLE_PLACES_API_KEY` Worker secret to enable it. Billable Google calls are capped at `GOOGLE_DAILY_LIMIT` per day (default 300).
+
+## Client brief & call script
+
+Each lead has a **Client brief** (button in the lead panel). You can print it or save it as PDF, download it as Markdown, and copy any section. It contains:
+
+- **What we know.** Every fact with its source (Comptroller, Google, website scan).
+- **Observed opportunities.** The evidence behind each recommendation.
+- **Recommended approach.** Teams already paying for tools get **one-on-one training** to get more out of them. Businesses with several gaps, or busy and expanding owners, get a **done-with-you setup**: we take the initiative, and they approve every step through discovery, a written plan, setup, review, a two-week pilot, a keep/adjust/roll-back decision and training handoff.
+- **Call script.**
+  - A permission-based opener.
+  - A "why I'm calling" hook built from what we observed (their reviews, a new location, an ownership change, a missing booking tool).
+  - What we do.
+  - Industry-specific discovery questions, so the owner puts their own numbers on the problem.
+  - An offer of both ways of working, and a small-step close.
+- **Voicemail and follow-up email.**
+- **Handling hesitation.** Busy, cost, "customers want a person", failed software before, data/AI trust, "we're fine", "send info", "we already use X".
+- **Building confidence.** They approve every step, a small pilot, their existing number and tools are kept, every change can be rolled back, success is measured together, and training is included.
+- **Guardrails** and a next-steps checklist.
+
+Scripts never quote statistics that can't be backed up; reps use the owner's own answers instead. The company name in scripts comes from `BIZZLE_COMPANY` (default `Ackerworks`).
+
 ## Accuracy rules
 
 These rules were found and fixed by checking live output against real records:

@@ -70,7 +70,7 @@ export function scoreLead(b, now = Date.now()) {
   } else if (w && (w.blocked || w.unknown)) add('gaps', 'Digital gaps (website scan)', 0, 25, [`Couldn't check site: ${w.error}`], false);
   else if (w) add('gaps', 'Digital gaps (website scan)', 20, 25, [`Website broken (${w.error})`]);
   else if (b.places_id && !b.website) add('gaps', 'Digital gaps (website scan)', 22, 25, ['No website listed on their Google profile']);
-  else add('gaps', 'Digital gaps (website scan)', 0, 25, [b.website ? 'Website not scanned yet' : 'No website on file — enrich via Google'], false);
+  else add('gaps', 'Digital gaps (website scan)', 0, 25, [b.website ? 'Website not scanned yet' : b.site_search_at ? 'No website found at likely domains — check manually' : 'No website on file — run enrichment'], false);
 
   // Demand — Google review volume/rating or real alcohol-sales revenue, whichever is stronger.
   const dem = []; let demPts = 0; let demKnown = false;
@@ -78,6 +78,12 @@ export function scoreLead(b, now = Date.now()) {
     demKnown = true;
     const rev = clamp(Math.log10((b.review_count ?? 0) + 1) / Math.log10(1000), 0, 1) * 16 + (b.rating >= 4.2 ? 4 : 0);
     demPts = Math.max(demPts, rev); dem.push(`${b.rating ?? '–'}★ from ${b.review_count ?? 0} Google reviews`);
+  }
+  const self = w?.self_rating;
+  if (!b.places_id && self) { // fallback: rating the business publishes on its own site (schema.org) — discounted
+    demKnown = true;
+    demPts = Math.max(demPts, 0.75 * (clamp(Math.log10(self.count + 1) / Math.log10(1000), 0, 1) * 16 + (self.rating >= 4.2 ? 4 : 0)));
+    dem.push(`${self.rating}★ from ${self.count} reviews (self-reported on their website)`);
   }
   if (b.mb_revenue_12mo != null) {
     demKnown = true;

@@ -54,6 +54,8 @@ async function boot() {
   const zones = ZONES.filter(([, , perm]) => !perm || can(perm));
   $('#who').replaceChildren(`${me.name} · ${me.role} `, h('button', { class: 'link', onclick: async () => { await api('/api/logout', { method: 'POST' }); renderLogin(); } }, 'Sign out'));
   const go = (id) => {
+    const brief = id.match(/^brief\/(\d+)$/);
+    if (brief && can('strategy:read')) { $('#drawer').hidden = true; return renderBrief(brief[1]); }
     const z = zones.find((x) => x[0] === id) ?? zones[0];
     $('#nav').querySelectorAll('a').forEach((a) => a.classList.toggle('active', a.dataset.zone === z[0]));
     $('#drawer').hidden = true;
@@ -206,7 +208,7 @@ async function openLead(id) {
     h('button', { class: 'close', onclick: () => { d.hidden = true; } }, '×'),
     h('h2', {}, l.name), h('p', {}, segChips(l.segments), ' ', tier(l), ' ', h('span', { class: 'muted' }, `${l.coverage}% of score inputs checked`)),
     facts(l),
-    h('p', {}, refresh, h('small', { class: 'muted' }, ` Google ${date(l.places_checked_at)} · Website ${date(l.web_checked_at)} · Source: ${l.source}`)), log,
+    h('p', {}, refresh, ' ', s && h('a', { class: 'button', href: `#brief/${l.id}` }, 'Client brief & call script'), h('small', { class: 'muted' }, ` Google ${date(l.places_checked_at)} · Website ${date(l.web_checked_at)} · Source: ${l.source}`)), log,
     h('h3', {}, 'Why this score'), ...bars,
     s && h('section', {}, h('h3', {}, `Strategy — ${s.industry}`), h('p', { class: 'pitch' }, s.pitch),
       s.recommended.length > 0
@@ -305,6 +307,37 @@ function renderAccount() {
   h('input', { name: 'confirm', type: 'password', placeholder: 'Repeat new password', required: true, autocomplete: 'new-password' }),
   h('button', {}, 'Change password'), out);
   $('#main').replaceChildren(h('h1', {}, 'Account'), h('p', { class: 'muted' }, `${me.name} · ${me.email} · ${me.role}`), form);
+}
+
+// ---------- Client brief (printable) ----------
+const copyBtn = (text, label = 'Copy') => {
+  const b = h('button', { type: 'button', class: 'ghost no-print', onclick: async () => { await navigator.clipboard.writeText(text); b.textContent = 'Copied'; setTimeout(() => { b.textContent = label; }, 1500); } }, label);
+  return b;
+};
+async function renderBrief(id) {
+  const l = await api(`/api/leads/${id}`);
+  const o = l.strategy.outreach;
+  const rec = o.paths[o.recommendedPath];
+  const scriptText = o.script.map((x) => `${x.step}\n${x.say ?? ''}${(x.ask ?? []).map((q) => `\n- ${q}`).join('')}`).join('\n\n');
+  $('#main').replaceChildren(h('article', { class: 'brief' },
+    h('p', { class: 'no-print' }, h('a', { href: '#leads' }, '← Lead Finder'), ' ',
+      h('button', { type: 'button', onclick: () => window.print() }, 'Print / save PDF'), ' ',
+      h('a', { class: 'button', href: `/api/leads/${id}/brief.md`, download: '' }, 'Download (.md)')),
+    h('h1', {}, `Client brief — ${o.name}`), h('p', {}, segChips(l.segments), ' ', tier(l), h('span', { class: 'muted' }, ` ${l.coverage}% of score inputs checked`)),
+    h('h2', {}, 'What we know'), h('table', { class: 'facts' }, o.snapshot.map((f) => h('tr', {}, h('th', {}, f.label), h('td', {}, f.value, h('small', { class: 'muted' }, ` · ${f.source}`))))),
+    o.evidence.length > 0 && [h('h2', {}, 'Observed opportunities'), h('ul', {}, o.evidence.map((e) => h('li', {}, e)))],
+    h('h2', {}, `Recommended approach: ${rec.title}`), h('p', { class: 'pitch' }, rec.pitch), rec.why.length > 0 && h('ul', {}, rec.why.map((w) => h('li', {}, w))),
+    h('div', { class: 'grid' }, Object.entries(o.paths).map(([k, p]) => h('div', { class: `card${k === o.recommendedPath ? ' rec' : ''}` },
+      h('h3', {}, p.title, k === o.recommendedPath ? ' ✓' : ''), h('p', {}, p.pitch), h('ol', {}, p.steps.map((x) => h('li', {}, x)))))),
+    h('h2', {}, 'Call script ', copyBtn(scriptText)),
+    o.script.map((x) => h('div', { class: 'script-step' }, h('h4', {}, x.step), x.say && h('blockquote', {}, x.say), x.ask && h('ul', {}, x.ask.map((q) => h('li', {}, q))))),
+    h('h2', {}, 'Voicemail ', copyBtn(o.voicemail)), h('blockquote', {}, o.voicemail),
+    h('h2', {}, 'Follow-up email ', copyBtn(`Subject: ${o.followUp.subject}\n\n${o.followUp.body}`)), h('pre', { class: 'email' }, `Subject: ${o.followUp.subject}\n\n${o.followUp.body}`),
+    h('h2', {}, 'Handling hesitation'), h('dl', { class: 'objections' }, o.objections.flatMap((x) => [h('dt', {}, x.objection), h('dd', {}, x.response)])),
+    h('h2', {}, 'Building confidence'), h('ul', {}, o.confidenceBuilders.map((c) => h('li', {}, c))),
+    h('h2', {}, 'Guardrails'), h('ul', {}, o.guardrails.map((g) => h('li', {}, g))),
+    h('h2', {}, 'Next steps'), h('ul', { class: 'checklist' }, o.nextSteps.map((x) => h('li', {}, h('label', {}, h('input', { type: 'checkbox' }), ` ${x}`))))));
+  window.scrollTo(0, 0);
 }
 
 boot();

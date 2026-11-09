@@ -46,3 +46,12 @@ textarea { width:100%; min-height:60px; display:block; margin:8px 0; }
 button.ghost { background:none; color:var(--ink); border:1px solid var(--line); font-size:13px; padding:4px 10px; }
 button.ghost:hover { border-color:var(--accent); color:var(--accent); }
 .error:empty { display:none; }
+
+a.button { display:inline-block; background:var(--accent); color:#fff; padding:6px 10px; border-radius:6px; text-decoration:none; }
+.brief { max-width:860px; } .brief h2 { margin-top:28px; border-bottom:1px solid var(--line); padding-bottom:4px; }
+.brief blockquote { margin:6px 0 12px; padding:8px 12px; background:#fff; border-left:3px solid var(--accent); border-radius:4px; }
+.brief .card.rec { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+.script-step h4 { margin:14px 0 4px; } .email { white-space:pre-wrap; background:#fff; border:1px solid var(--line); padding:12px; border-radius:6px; font:inherit; }
+.objections dt { font-weight:600; margin-top:10px; } .objections dd { margin:2px 0 0 0; color:#333; }
+.checklist { list-style:none; padding:0; }
+@media print { header, .no-print, #drawer { display:none !important; } body { background:#fff; } main { padding:0; } .brief blockquote, .email, .card { break-inside:avoid; } }

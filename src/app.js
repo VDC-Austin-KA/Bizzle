@@ -9,6 +9,7 @@ import { parseCsv } from './csv.js';
 import { placesEnabled, searchPlaces } from './sources/places.js';
 import { COUNTIES, fetchOutlets, fetchOutletStats } from './sources/comptroller.js';
 import { enrichLead, needsEnrichment } from './enrich.js';
+import { buildOutreach, briefMarkdown } from './outreach.js';
 
 const MAX_BODY = 2_000_000;
 const MAX_REGISTRY_IMPORT = 200;
@@ -23,6 +24,15 @@ export async function ensureDemoUsers(db) {
   for (const a of DEMO_ACCOUNTS) {
     if (!(await db.get('SELECT 1 AS ok FROM users WHERE email = ?', a.email))) await createUser(db, { ...a, password: DEMO_PASSWORD }).catch(() => {});
   }
+}
+// Daily cap on billable Google calls (protects the key while alpha logins are public). GOOGLE_DAILY_LIMIT overrides.
+export async function takeGoogle(db, n) {
+  const limit = Number(globalThis.process?.env?.GOOGLE_DAILY_LIMIT) || 300;
+  const day = new Date().toISOString().slice(0, 10);
+  const used = (await db.get('SELECT google_calls FROM usage WHERE day = ?', day))?.google_calls ?? 0;
+  if (used + n > limit) return false;
+  await db.run('INSERT INTO usage (day, google_calls) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET google_calls = google_calls + ?', day, n, n);
+  return true;
 }
 const HOME = { owner: 'leads', analyst: 'leads', sales: 'pipeline' }; // landing zone per role // keeps one request well under Workers' per-request subrequest limits
 
@@ -122,7 +132,14 @@ export function createApp(db, { fetchImpl, secureCookies = false, alpha = false 
       const lead = await getLead(id);
       const activities = await db.all(`SELECT a.kind, a.body, a.created_at, u.name AS user FROM activities a
         LEFT JOIN users u ON u.id = a.user_id WHERE lead_id = ? ORDER BY a.id DESC`, lead.id);
-      return { ...lead, activities, strategy: can(user, P.STRATEGY_READ) ? strategyFor(lead) : undefined };
+      const strategy = can(user, P.STRATEGY_READ) ? strategyFor(lead) : undefined;
+      return { ...lead, activities, strategy: strategy && { ...strategy, outreach: buildOutreach(lead, strategy) } };
+    }],
+    ['GET', /^\/api\/leads\/(\d+)\/brief\.md$/, P.STRATEGY_READ, async ({ params: [id] }) => {
+      const lead = await getLead(id);
+      const md = briefMarkdown(buildOutreach(lead, strategyFor(lead)));
+      const file = `brief-${lead.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50)}.md`;
+      return new Response(md, { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': `attachment; filename="${file}"`, 'Cache-Control': 'no-store' } });
     }],
     ['POST', /^\/api\/leads$/, P.LEADS_WRITE, async ({ req, user }) => {
       const { lead, error } = manualLead(await readJson(req));
@@ -160,6 +177,7 @@ export function createApp(db, { fetchImpl, secureCookies = false, alpha = false 
       const { query, city, industry } = await readJson(req);
       if (!query || !city) fail(400, 'query and city are required');
       if (industry && !PLAYBOOKS[industry]) fail(400, 'Unknown industry');
+      if (!(await takeGoogle(db, 1))) fail(429, 'Daily Google search limit reached — try again tomorrow');
       const found = await searchPlaces({ query: String(query).slice(0, 100), city: String(city).slice(0, 60) }, fetchImpl);
       let created = 0;
       for (const p of found) created += (await upsertLead(db, { ...p, industry })).created;
@@ -169,7 +187,7 @@ export function createApp(db, { fetchImpl, secureCookies = false, alpha = false 
     // Enrichment — one lead per request (bounded outbound calls); the UI works through the queue.
     ['POST', /^\/api\/leads\/(\d+)\/enrich$/, P.LEADS_READ, async ({ params: [id], user }) => {
       await getLead(id);
-      const { log } = await enrichLead(db, Number(id), { fetchImpl });
+      const { log } = await enrichLead(db, Number(id), { fetchImpl, googleBudget: (n) => takeGoogle(db, n) });
       await logActivity(Number(id), user.id, 'enriched', log.join('\n'));
       return { log, lead: await getLead(id) };
     }],
@@ -242,6 +260,7 @@ export function createApp(db, { fetchImpl, secureCookies = false, alpha = false 
       if (perm !== 'public' && !user) fail(401, 'Not signed in');
       if (perm && perm !== 'public' && !can(user, perm)) fail(403, 'Your role cannot access this zone');
       const result = await fn({ req, url, user, ip, headers, params: url.pathname.match(re).slice(1) });
+      if (result instanceof Response) return result;
       return new Response(JSON.stringify(result), { status: 200, headers });
     } catch (e) {
       if (!(e instanceof HttpError)) console.error(e);

@@ -100,6 +100,13 @@ test('scanner refuses private addresses (SSRF guard)', async () => {
   assert.equal(r.reachable, false); assert.match(r.error, /private/);
 });
 
+test('server errors are "couldn\'t check", 404 is broken', async () => {
+  const resp = (status) => async () => ({ ok: false, status, headers: new Headers(), text: async () => '' });
+  assert.equal((await scanWebsite('http://93.184.215.14/', resp(520))).unknown, true);
+  const r404 = await scanWebsite('http://93.184.215.14/', resp(404));
+  assert.equal(r404.unknown, undefined); assert.equal(r404.error, 'HTTP 404');
+});
+
 test('scanner reports bot walls as blocked, not as a broken site', async () => {
   const fetchImpl = async () => ({ ok: true, status: 202, headers: new Headers(), text: async () => '<meta http-equiv="refresh" content="0;/.well-known/sgcaptcha/?r=%2F">' });
   const r = await scanWebsite('http://93.184.215.14/', fetchImpl);

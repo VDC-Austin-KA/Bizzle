@@ -72,7 +72,27 @@ export function detectSignals(html, finalUrl, scripts = '') {
     click_to_call: /href=["']tel:/i.test(html),
     copyright_year: years.length ? Math.max(...years) : null,
     title: html.match(/<title[^>]*>([^<]{0,140})/i)?.[1]?.trim() ?? null,
+    self_rating: aggregateRating(html),
   };
+}
+
+// schema.org AggregateRating the business publishes on its own site (self-reported; labelled as such in scoring).
+export function aggregateRating(html) {
+  for (const [, json] of html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
+    let data; try { data = JSON.parse(json); } catch { continue; }
+    const stack = [data];
+    while (stack.length) {
+      const n = stack.pop();
+      if (!n || typeof n !== 'object') continue;
+      const ar = n.aggregateRating;
+      if (ar && typeof ar === 'object') {
+        const rating = Number(ar.ratingValue), count = Number(ar.reviewCount ?? ar.ratingCount);
+        if (rating > 0 && rating <= 5 && count > 0) return { rating: Math.round(rating * 10) / 10, count: Math.round(count) };
+      }
+      stack.push(...Object.values(n));
+    }
+  }
+  return null;
 }
 
 // We identify ourselves honestly and never try to get past bot protection: a blocked site is "unknown", not a gap.
@@ -80,9 +100,9 @@ const UA = 'Mozilla/5.0 (compatible; BizzleSiteCheck/1.0; +https://github.com/vd
 const CHALLENGE = /sgcaptcha|cf-chl|challenge-platform|just a moment\.\.\.|attention required|ddos-guard|_incapsula_|px-captcha|captcha-delivery/i;
 const BROKEN_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'DEPTH_ZERO_SELF_SIGNED_CERT']);
 
-async function get(url, fetchImpl, max) {
+async function get(url, fetchImpl, max, timeoutMs = 15_000) {
   await assertPublic(url);
-  const res = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(15_000), headers: { 'User-Agent': UA, Accept: '*/*' } });
+  const res = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(timeoutMs), headers: { 'User-Agent': UA, Accept: '*/*' } });
   return { res, body: res.status >= 300 && res.status < 400 ? '' : (await res.text()).slice(0, max) };
 }
 
@@ -97,25 +117,65 @@ function scriptUrls(html, base) {
   return [...new Map(gtmFirst.map((u) => [u.href, u])).values()].slice(0, 6);
 }
 
-export async function scanWebsite(rawUrl, fetchImpl = fetch) {
+// Fetch a homepage following redirects / meta-refresh, with the SSRF guard on every hop.
+async function loadPage(rawUrl, fetchImpl, timeoutMs) {
   let url = new URL(/^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`);
   try {
-    let html = null;
-    for (let hop = 0; hop < 6 && html == null; hop++) {
-      const { res, body } = await get(url, fetchImpl, 1_500_000);
+    for (let hop = 0; hop < 6; hop++) {
+      const { res, body } = await get(url, fetchImpl, 1_500_000, timeoutMs);
       if (res.status >= 300 && res.status < 400 && res.headers.get('location')) { url = new URL(res.headers.get('location'), url); continue; }
-      if (CHALLENGE.test(body) || [202, 401, 403, 429].includes(res.status)) return { reachable: false, blocked: true, error: 'Site blocks automated checks — review manually', checked_url: url.href };
-      if (!res.ok) return { reachable: false, error: `HTTP ${res.status}`, checked_url: url.href };
+      if (CHALLENGE.test(body) || [202, 401, 403, 429].includes(res.status)) return { blocked: true, error: 'Site blocks automated checks — review manually', url };
+      // Only a missing page proves the site is broken; 5xx (incl. Cloudflare 52x seen from Workers) may be temporary or a block.
+      if (!res.ok) return { error: `HTTP ${res.status}`, broken: [404, 410].includes(res.status), url };
       const refresh = body.length < 3000 && body.match(/http-equiv=["']?refresh["']?[^>]*url=([^"'>\s]+)/i);
       if (refresh) { url = new URL(refresh[1], url); continue; }
-      html = body;
+      return { html: body, url };
     }
-    if (html == null) return { reachable: false, error: 'Too many redirects', checked_url: url.href };
-    const scripts = await Promise.all(scriptUrls(html, url).map((u) => get(u, fetchImpl, 1_000_000).then((r) => r.body).catch(() => '')));
-    return detectSignals(html, url.href, scripts.join('\n'));
+    return { error: 'Too many redirects', url };
   } catch (e) {
     const code = e.cause?.code ?? e.code;
-    if (BROKEN_CODES.has(code)) return { reachable: false, error: code, checked_url: url.href };
-    return { reachable: false, unknown: true, error: code ?? e.message, checked_url: url.href };
+    return { error: code ?? e.message, broken: BROKEN_CODES.has(code), url };
   }
+}
+
+export async function scanWebsite(rawUrl, fetchImpl = fetch) {
+  const page = await loadPage(rawUrl, fetchImpl);
+  if (page.blocked) return { reachable: false, blocked: true, error: page.error, checked_url: page.url.href };
+  if (page.html == null) return { reachable: false, error: page.error, checked_url: page.url.href, ...(page.broken ? {} : { unknown: true }) };
+  const scripts = await Promise.all(scriptUrls(page.html, page.url).map((u) => get(u, fetchImpl, 1_000_000).then((r) => r.body).catch(() => '')));
+  return detectSignals(page.html, page.url.href, scripts.join('\n'));
+}
+
+// Website discovery without Google: try likely .com domains built from the business name and accept one
+// only if the page itself names the business (every distinctive word) AND its city or ZIP.
+const LEGAL = new Set(['llc', 'inc', 'co', 'corp', 'company', 'ltd', 'pllc', 'lp', 'the', 'dba', 'of']);
+const GENERIC_WORDS = new Set(['services', 'service', 'plumbing', 'electric', 'electrical', 'heating', 'cooling', 'air', 'ac', 'hvac',
+  'home', 'restaurant', 'cafe', 'grill', 'bar', 'salon', 'spa', 'auto', 'repair', 'construction', 'roofing', 'dental', 'law', 'and',
+  'group', 'solutions', 'texas', 'tx', 'austin', 'llc', 'pros', 'professional', 'contractors', 'contracting', 'systems', 'mechanical']);
+const words = (s) => String(s ?? '').toLowerCase().replace(/['’]/g, '').replace(/&/g, ' and ').split(/[^a-z0-9]+/).filter((w) => w && !LEGAL.has(w));
+
+export function candidateDomains(name, { legalName, city } = {}) {
+  const variants = (n) => {
+    const w = words(n).filter((x) => !/^\d+$/.test(x));
+    const core = w.filter((x) => !['services', 'service', 'company'].includes(x));
+    return w.length ? [w.join(''), core.join(''), w.join('-'), `${core.join('')}tx`, `${core.join('')}atx`,
+      city ? `${core.join('')}${words(city).join('')}` : ''] : [];
+  };
+  const out = [...variants(name), ...(legalName ? variants(legalName).slice(0, 2) : [])].filter((d) => d.length >= 6 && d.length <= 40);
+  return [...new Set(out)].slice(0, 6).map((d) => `https://${d}.com/`);
+}
+
+export function pageMatchesBusiness(html, lead) {
+  const text = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').toLowerCase();
+  const has = (w) => new RegExp(`\\b${w.replace(/[^a-z0-9]/g, '')}\\b`).test(text);
+  const distinct = words(lead.name).filter((x) => !GENERIC_WORDS.has(x) && !/^\d+$/.test(x));
+  if (!distinct.length || !distinct.every(has)) return false;
+  const places = [lead.city, lead.hq_city].filter(Boolean).map((c) => c.toLowerCase());
+  return places.some((c) => text.includes(c)) || (!!lead.zip && text.includes(lead.zip));
+}
+
+export async function discoverWebsite(lead, fetchImpl = fetch) {
+  // Candidates are checked in parallel (short timeout); the first verified one in priority order wins.
+  const pages = await Promise.all(candidateDomains(lead.name, { legalName: lead.legal_name, city: lead.city }).map((u) => loadPage(u, fetchImpl, 8_000)));
+  return pages.find((p) => p.html && pageMatchesBusiness(p.html, lead))?.url.href ?? null;
 }

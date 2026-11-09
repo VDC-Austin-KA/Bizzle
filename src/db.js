@@ -6,7 +6,7 @@ export const STAGES = ['new', 'contacted', 'discovery', 'proposal', 'won', 'lost
 export const DATA_FIELDS = ['name', 'legal_name', 'org_type', 'industry', 'naics', 'address', 'city', 'zip', 'county', 'phone', 'website',
   'taxpayer_number', 'outlet_number', 'hq_city', 'hq_state', 'hq_local', 'first_sale_date', 'entity_formed_date', 'outlets_total', 'outlets_opened_12mo',
   'places_id', 'google_name', 'rating', 'review_count', 'business_status', 'maps_url', 'google_category', 'places_checked_at',
-  'web_signals', 'web_checked_at', 'mb_revenue_12mo', 'mb_revenue_prev_12mo', 'mb_latest_month', 'mb_checked_at', 'source', 'external_id'];
+  'web_signals', 'web_checked_at', 'site_search_at', 'mb_revenue_12mo', 'mb_revenue_prev_12mo', 'mb_latest_month', 'mb_checked_at', 'source', 'external_id'];
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -21,12 +21,13 @@ CREATE TABLE IF NOT EXISTS leads (
   taxpayer_number TEXT, outlet_number TEXT, hq_city TEXT, hq_state TEXT, hq_local INTEGER,
   first_sale_date TEXT, entity_formed_date TEXT, outlets_total INTEGER, outlets_opened_12mo INTEGER,
   places_id TEXT, google_name TEXT, rating REAL, review_count INTEGER, business_status TEXT, maps_url TEXT, google_category TEXT, places_checked_at TEXT,
-  web_signals TEXT, web_checked_at TEXT,
+  web_signals TEXT, web_checked_at TEXT, site_search_at TEXT,
   mb_revenue_12mo INTEGER, mb_revenue_prev_12mo INTEGER, mb_latest_month TEXT, mb_checked_at TEXT,
   stage TEXT DEFAULT 'new', est_value INTEGER DEFAULT 0, assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
   source TEXT, external_id TEXT UNIQUE, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE INDEX IF NOT EXISTS leads_addr ON leads(addr_key, zip);
 CREATE INDEX IF NOT EXISTS leads_places ON leads(places_id);
+CREATE TABLE IF NOT EXISTS usage (day TEXT PRIMARY KEY, google_calls INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS activities (
   id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, kind TEXT NOT NULL, body TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
