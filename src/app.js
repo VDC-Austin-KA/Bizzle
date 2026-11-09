@@ -11,7 +11,20 @@ import { COUNTIES, fetchOutlets, fetchOutletStats } from './sources/comptroller.
 import { enrichLead, needsEnrichment } from './enrich.js';
 
 const MAX_BODY = 2_000_000;
-const MAX_REGISTRY_IMPORT = 200; // keeps one request well under Workers' per-request subrequest limits
+const MAX_REGISTRY_IMPORT = 200;
+// Alpha mode (ALPHA_MODE=true): shared demo logins, one per access portal, shown as buttons on the sign-in page.
+export const DEMO_PASSWORD = 'alpha2026!';
+export const DEMO_ACCOUNTS = [
+  { label: 'Owner (admin)', email: 'owner@bizzle.test', name: 'Demo Owner', role: 'owner' },
+  { label: 'Analyst', email: 'analyst@bizzle.test', name: 'Demo Analyst', role: 'analyst' },
+  { label: 'Sales rep', email: 'sales@bizzle.test', name: 'Demo Sales Rep', role: 'sales' },
+];
+export async function ensureDemoUsers(db) {
+  for (const a of DEMO_ACCOUNTS) {
+    if (!(await db.get('SELECT 1 AS ok FROM users WHERE email = ?', a.email))) await createUser(db, { ...a, password: DEMO_PASSWORD }).catch(() => {});
+  }
+}
+const HOME = { owner: 'leads', analyst: 'leads', sales: 'pipeline' }; // landing zone per role // keeps one request well under Workers' per-request subrequest limits
 
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const fail = (status, msg) => { throw new HttpError(status, msg); };
@@ -44,7 +57,9 @@ export function manualLead(input) {
 
 const withScore = (row) => { const lead = rowToLead(row); return { ...lead, ...scoreLead(lead) }; };
 
-export function createApp(db, { fetchImpl, secureCookies = false } = {}) {
+export function createApp(db, { fetchImpl, secureCookies = false, alpha = false } = {}) {
+  let demoReady = null;
+  const demoUsers = () => (demoReady ??= ensureDemoUsers(db).catch((e) => { demoReady = null; throw e; }));
   const allLeads = async () => (await db.all('SELECT * FROM leads')).map(withScore);
   const getLead = async (id) => { const r = await db.get('SELECT * FROM leads WHERE id = ?', Number(id)); return r ? withScore(r) : fail(404, 'Lead not found'); };
   const logActivity = (leadId, userId, kind, body) => db.run('INSERT INTO activities (lead_id, user_id, kind, body) VALUES (?,?,?,?)', leadId, userId, kind, body);
@@ -52,14 +67,20 @@ export function createApp(db, { fetchImpl, secureCookies = false } = {}) {
 
   // [method, path regex, permission | null (auth only) | 'public', handler]
   const routes = [
+    ['GET', /^\/api\/auth\/config$/, 'public', async () => {
+      if (!alpha) return { alpha: false };
+      await demoUsers();
+      return { alpha: true, password: DEMO_PASSWORD, accounts: DEMO_ACCOUNTS.map(({ label, email }) => ({ label, email })) };
+    }],
     ['POST', /^\/api\/login$/, 'public', async ({ req, ip, headers }) => {
       if (throttled(ip)) fail(429, 'Too many attempts, try again later');
+      if (alpha) await demoUsers();
       const { email, password } = await readJson(req);
       const u = await db.get('SELECT * FROM users WHERE email = ?', String(email ?? '').toLowerCase().trim());
       if (!u || !(await verifyPassword(String(password ?? ''), u.password_hash))) { recordFailure(ip); fail(401, 'Invalid credentials'); }
       await purgeExpiredSessions(db);
       headers.set('Set-Cookie', sessionCookie(await createSession(db, u.id), 43200));
-      return { id: u.id, name: u.name, role: u.role };
+      return { id: u.id, name: u.name, role: u.role, home: HOME[u.role] };
     }],
     ['POST', /^\/api\/logout$/, null, async ({ req, headers }) => {
       await destroySession(db, cookie(req, 'sid'));
@@ -69,6 +90,7 @@ export function createApp(db, { fetchImpl, secureCookies = false } = {}) {
     ['GET', /^\/api\/me$/, null, ({ user }) => ({ ...user, permissions: ROLES[user.role] })],
     ['POST', /^\/api\/me\/password$/, null, async ({ req, user, headers }) => {
       const { current, next } = await readJson(req);
+      if (alpha && DEMO_ACCOUNTS.some((d) => d.email === user.email)) fail(403, 'Demo accounts share a fixed password');
       try { await changePassword(db, user.id, current, next); } catch (e) { fail(400, e.message); }
       headers.set('Set-Cookie', sessionCookie(await createSession(db, user.id), 43200));
       return { ok: true };

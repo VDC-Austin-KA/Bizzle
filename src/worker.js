@@ -13,7 +13,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/api/')) {
-      app ??= createApp(d1Db(env.DB), { secureCookies: true });
+      app ??= createApp(d1Db(env.DB), { secureCookies: true, alpha: env.ALPHA_MODE === 'true' });
       return app(request, { ip: request.headers.get('CF-Connecting-IP') ?? 'unknown' });
     }
     const file = ASSETS[url.pathname];

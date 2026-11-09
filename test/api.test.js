@@ -127,6 +127,24 @@ test('enrichment queue + password change', async () => {
   assert.equal((await sales('/api/enrich/queue')).status, 403);
 });
 
+test('alpha mode: demo accounts per portal, hidden when off', async () => {
+  const off = await (await fetch(`${base}/api/auth/config`)).json();
+  assert.deepEqual(off, { alpha: false });
+  const db = openDb(':memory:');
+  const alphaServer = createServer(nodeHandler(createApp(db, { alpha: true }))).listen(0);
+  const ab = `http://localhost:${alphaServer.address().port}`;
+  try {
+    const cfg = await (await fetch(`${ab}/api/auth/config`)).json();
+    assert.equal(cfg.alpha, true);
+    assert.deepEqual(cfg.accounts.map((a) => a.label), ['Owner (admin)', 'Analyst', 'Sales rep']);
+    for (const [email, home] of [['owner@bizzle.test', 'leads'], ['sales@bizzle.test', 'pipeline']]) {
+      const r = await fetch(`${ab}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password: cfg.password }) });
+      assert.equal(r.status, 200);
+      assert.equal((await r.json()).home, home);
+    }
+  } finally { alphaServer.close(); }
+});
+
 test('non-JSON bodies are refused even with a valid session (CSRF guard)', async () => {
   const owner = await login('owner');
   assert.equal((await owner('/api/leads', { method: 'POST', body: 'name=x', type: 'text/plain' })).status, 415);

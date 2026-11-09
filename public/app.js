@@ -29,19 +29,24 @@ const ZONES = [
   ['account', 'Account', null, renderAccount],
 ];
 
-function renderLogin(msg) {
+async function renderLogin(msg) {
   me = null; $('#nav').replaceChildren(); $('#who').replaceChildren(); $('#drawer').hidden = true;
   const err = h('p', { class: 'error' }, msg ?? '');
-  const form = h('form', { class: 'card login', onsubmit: async (e) => {
-    e.preventDefault();
-    const f = new FormData(form);
-    try { await api('/api/login', { method: 'POST', body: { email: f.get('email'), password: f.get('password') } }); boot(); }
+  const signIn = async (email, password) => {
+    try { const r = await api('/api/login', { method: 'POST', body: { email, password } }); location.hash = r.home; boot(); }
     catch (x) { err.textContent = x.message; }
-  } },
-  h('h2', {}, 'Sign in'), h('input', { name: 'email', type: 'email', placeholder: 'Email', required: true, autocomplete: 'username' }),
-  h('input', { name: 'password', type: 'password', placeholder: 'Password', required: true, autocomplete: 'current-password' }),
-  h('button', {}, 'Sign in'), err);
+  };
+  const form = h('form', { class: 'card login', onsubmit: (e) => { e.preventDefault(); const f = new FormData(form); signIn(f.get('email'), f.get('password')); } },
+    h('h2', {}, 'Sign in'), h('input', { name: 'email', type: 'email', placeholder: 'Email', required: true, autocomplete: 'username' }),
+    h('input', { name: 'password', type: 'password', placeholder: 'Password', required: true, autocomplete: 'current-password' }),
+    h('button', {}, 'Sign in'), err);
   $('#main').replaceChildren(form);
+  // Alpha mode: one-click demo accounts, one per access portal (same pattern as ShoalCreekClean).
+  const cfg = await api('/api/auth/config').catch(() => ({}));
+  if (cfg.alpha) form.append(h('div', { class: 'demo' },
+    h('small', { class: 'muted' }, `Alpha demo accounts · password ${cfg.password}`),
+    h('div', { class: 'demo-buttons' }, cfg.accounts.map((a) => h('button', { type: 'button', class: 'ghost',
+      onclick: () => { form.email.value = a.email; form.password.value = cfg.password; signIn(a.email, cfg.password); } }, a.label)))));
 }
 
 async function boot() {

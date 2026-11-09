@@ -1,19 +1,14 @@
-// Local dev: creates the owner account (and demo analyst/sales logins outside production). Idempotent.
-// No business data is seeded — leads come only from real sources (Lead Finder → Source new leads).
-// Production (D1) users are created with `npm run create-owner` — see README.
+// Local dev: creates the alpha demo accounts (one per access portal, password alpha2026!) and, if
+// BIZZLE_OWNER_EMAIL + BIZZLE_OWNER_PASSWORD are set, a real owner. No business data is seeded.
 import { openDb } from './db-node.js';
 import { createUser } from './auth.js';
+import { ensureDemoUsers, DEMO_ACCOUNTS, DEMO_PASSWORD } from './app.js';
 
 const db = openDb();
-const ensureUser = async (u, showPw = true) => {
-  if (await db.get('SELECT 1 AS ok FROM users WHERE email = ?', u.email)) return;
-  await createUser(db, u);
-  console.log(`user ${u.role.padEnd(7)} ${u.email}  /  ${showPw ? u.password : '(password from env)'}`);
-};
-
-await ensureUser({ email: process.env.BIZZLE_OWNER_EMAIL ?? 'owner@bizzle.local', name: 'Owner', role: 'owner',
-  password: process.env.BIZZLE_OWNER_PASSWORD ?? 'change-me-owner' }, !process.env.BIZZLE_OWNER_PASSWORD);
-if (process.env.NODE_ENV !== 'production') {
-  await ensureUser({ email: 'analyst@bizzle.local', name: 'Demo Analyst', role: 'analyst', password: 'change-me-analyst' });
-  await ensureUser({ email: 'sales@bizzle.local', name: 'Demo Rep', role: 'sales', password: 'change-me-sales' });
+await ensureDemoUsers(db);
+for (const a of DEMO_ACCOUNTS) console.log(`${a.label.padEnd(14)} ${a.email}  /  ${DEMO_PASSWORD}`);
+const { BIZZLE_OWNER_EMAIL: email, BIZZLE_OWNER_PASSWORD: password } = process.env;
+if (email && password && !(await db.get('SELECT 1 AS ok FROM users WHERE email = ?', email.toLowerCase()))) {
+  await createUser(db, { email, name: 'Owner', role: 'owner', password });
+  console.log(`owner          ${email}  /  (password from env)`);
 }

@@ -21,7 +21,15 @@ Then open **Lead Finder → Source new leads**:
 2. **Enrich.** Pulls the Google listing, scans the website and checks state records.
 3. Sort by score and open a lead to see its evidence and talking points.
 
-Dev logins (created only when `NODE_ENV` ≠ `production`): `owner@bizzle.local` / `change-me-owner`, `analyst@bizzle.local` / `change-me-analyst`, `sales@bizzle.local` / `change-me-sales`. In production, set `BIZZLE_OWNER_EMAIL` and `BIZZLE_OWNER_PASSWORD` before you seed.
+**Alpha mode** works the same way as ShoalCreekClean. With `ALPHA_MODE=true`, set in `wrangler.jsonc` and on by default locally, the sign-in page shows one button per access portal. Every demo account uses the password `alpha2026!`:
+
+| Button | Login | Portal |
+|---|---|---|
+| Owner (admin) | `owner@bizzle.test` | Every zone: Lead Finder, Pipeline, Analytics, Admin |
+| Analyst | `analyst@bizzle.test` | Lead Finder, sourcing, Strategy, Analytics |
+| Sales rep | `sales@bizzle.test` | Lands on Pipeline; Lead Finder + Strategy |
+
+The demo accounts are created automatically, and their shared password can't be changed. **Before real use, set `ALPHA_MODE` to `"false"` and redeploy.** That hides the buttons, and you then create real users with `npm run create-user` or from the Admin zone.
 
 ## Hosting (Cloudflare Workers + D1)
 

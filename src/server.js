@@ -35,5 +35,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const db = openDb();
   if (!(await db.get('SELECT COUNT(*) AS n FROM users')).n) console.warn('No users yet — run `npm run seed` first.');
   const port = Number(process.env.PORT ?? 3000);
-  createServer(nodeHandler(createApp(db))).listen(port, () => console.log(`Bizzle running at http://localhost:${port}`));
+  createServer(nodeHandler(createApp(db, { alpha: process.env.ALPHA_MODE !== 'false' }))).listen(port, () => console.log(`Bizzle running at http://localhost:${port}`));
 }

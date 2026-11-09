@@ -7,5 +7,6 @@
   "build": { "command": "node scripts/build-static.js" },
   "d1_databases": [{ "binding": "DB", "database_name": "bizzle", "database_id": "4388f67d-4f18-4c08-b0dc-08b143c79baf", "migrations_dir": "migrations" }],
   "routes": [{ "pattern": "biz.ackerworks.com", "custom_domain": true }],
+  "vars": { "ALPHA_MODE": "true" },
   "observability": { "enabled": true }
 }

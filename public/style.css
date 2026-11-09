@@ -40,3 +40,9 @@ textarea { width:100%; min-height:60px; display:block; margin:8px 0; }
 .fill.unknown { background:#ccc; }
 .activity pre { margin:2px 0 0; white-space:pre-wrap; font:inherit; }
 .kpis { grid-template-columns:repeat(6,1fr); }
+
+.demo { border-top:1px solid var(--line); padding-top:12px; margin-top:4px; }
+.demo-buttons { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+button.ghost { background:none; color:var(--ink); border:1px solid var(--line); font-size:13px; padding:4px 10px; }
+button.ghost:hover { border-color:var(--accent); color:var(--accent); }
+.error:empty { display:none; }
