@@ -14,7 +14,8 @@
     "dev:worker": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply bizzle --remote",
-    "create-user": "node scripts/create-user.js"
+    "create-user": "node scripts/create-user.js",
+    "docs:workflows": "node scripts/workflow-docs.js"
   },
   "devDependencies": {
     "wrangler": "^4.159.0"

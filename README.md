@@ -63,6 +63,35 @@ The registry covers all 14 playbook industries in Travis, Williamson and Hays co
 
 **Google billing.** Requesting rating and website fields bills at Google's *Text Search Enterprise* rate. Each lead's enrichment makes one or two Google calls, and bulk enrichment is capped at 50 leads per run.
 
+## Client onboarding: private workspaces & portal
+
+**For staff (Clients zone, or "Onboard as client" on a lead):** pick the services the client bought, and Bizzle creates a **private workspace** and a single-use invite link valid for 14 days. You send the link.
+
+**For the client (`/portal`):**
+- They create their own sign-in, then fill in their business details and services.
+- They choose colors, a style and a font, upload a logo, and add links and workflow-specific answers.
+- A **live preview** of their site updates as they type. **Review & launch** publishes it to `/s/<their-name>`, and later edits go live with **Publish changes**.
+- They add keys to a **write-only vault**, with an optional read-only "Test connection" for Square, Calendly and Twilio.
+- They can run a **security check** of their current website and email domain, read their **access log**, **download** their data, or **delete** everything.
+
+**Privacy model:**
+- Each client's data lives in its **own database**: a Durable Object with SQLite storage on Cloudflare, one file per client locally. It is separate from Bizzle's sales database.
+- Keys are encrypted with a per-client key, are never returned by any screen or endpoint, and each use is logged.
+- No client-facing code calls an AI service, and tests enforce this.
+- Details are in [docs/SECURITY-PRIVACY.md](docs/SECURITY-PRIVACY.md).
+
+**Runbooks for operators and AI agents:**
+- [docs/WORKFLOWS.md](docs/WORKFLOWS.md) is generated with `npm run docs:workflows`.
+- Per-client runbooks download from the Clients zone.
+- They contain **only placeholders** (`{{business.phone}}`, `{{secret:…}}`) and progress flags, never client values. They're safe to give an AI agent, and the values are filled in by Bizzle's non-AI system.
+- Every service is defined in `public/workflows.js`: inputs, least-privilege access, security checks, automated/manual steps, verification and rollback.
+
+**Production requirement:** set the `WORKSPACE_KEY` Worker secret (32 random bytes, base64) before clients save keys:
+
+```bash
+node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))" | npx wrangler secret put WORKSPACE_KEY
+```
+
 ## Quotes & pricing
 
 - **Public quote builder.** **https://biz.ackerworks.com/quote** needs no login. Customers choose training, done-with-you workflows, locations, a care plan and how to pay, and see a live total with the payment schedule, timeline and separate third-party software estimates beside published market pricing. "Send me this quote" saves the request, creates a lead, and returns a shareable link.

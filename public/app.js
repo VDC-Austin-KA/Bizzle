@@ -26,6 +26,7 @@ const ZONES = [
   ['pipeline', 'Pipeline', 'pipeline:write', renderPipeline],
   ['analytics', 'Analytics', 'analytics:read', renderAnalytics],
   ['quotes', 'Quotes', 'strategy:read', renderQuotes],
+  ['clients', 'Clients', 'clients:manage', renderClients],
   ['admin', 'Admin', 'admin:users', renderAdmin],
   ['account', 'Account', null, renderAccount],
 ];
@@ -209,7 +210,7 @@ async function openLead(id) {
     h('button', { class: 'close', onclick: () => { d.hidden = true; } }, '×'),
     h('h2', {}, l.name), h('p', {}, segChips(l.segments), ' ', tier(l), ' ', h('span', { class: 'muted' }, `${l.coverage}% of score inputs checked`)),
     facts(l),
-    h('p', {}, refresh, ' ', s && h('a', { class: 'button', href: `#brief/${l.id}` }, 'Client brief & call script'), ' ', s && h('a', { class: 'button', href: `/quote?lead=${l.id}` }, 'Build a quote'), h('small', { class: 'muted' }, ` Google ${date(l.places_checked_at)} · Website ${date(l.web_checked_at)} · Source: ${l.source}`)), log,
+    h('p', {}, refresh, ' ', s && h('a', { class: 'button', href: `#brief/${l.id}` }, 'Client brief & call script'), ' ', s && h('a', { class: 'button', href: `/quote?lead=${l.id}` }, 'Build a quote'), ' ', can('clients:manage') && h('a', { class: 'button', href: '#clients', onclick: () => sessionStorage.setItem('onboard', JSON.stringify({ business: l.google_name ?? l.name, lead_id: l.id })) }, 'Onboard as client'), h('small', { class: 'muted' }, ` Google ${date(l.places_checked_at)} · Website ${date(l.web_checked_at)} · Source: ${l.source}`)), log,
     h('h3', {}, 'Why this score'), ...bars,
     s && h('section', {}, h('h3', {}, `Strategy — ${s.industry}`), h('p', { class: 'pitch' }, s.pitch),
       s.recommended.length > 0
@@ -308,6 +309,49 @@ function renderAccount() {
   h('input', { name: 'confirm', type: 'password', placeholder: 'Repeat new password', required: true, autocomplete: 'new-password' }),
   h('button', {}, 'Change password'), out);
   $('#main').replaceChildren(h('h1', {}, 'Account'), h('p', { class: 'muted' }, `${me.name} · ${me.email} · ${me.role}`), form);
+}
+
+// ---------- Clients (onboarding & oversight — key values are never shown) ----------
+async function renderClients() {
+  const { WORKFLOWS } = await import('/pricing.js');
+  const pre = JSON.parse(sessionStorage.getItem('onboard') ?? 'null'); sessionStorage.removeItem('onboard');
+  const out = h('div', { class: 'small' });
+  const form = h('form', { class: 'card', onsubmit: async (e) => {
+    e.preventDefault(); const f = new FormData(form);
+    try {
+      const r = await api('/api/clients', { method: 'POST', body: { business: f.get('business'), lead_id: pre?.lead_id, workflows: f.getAll('workflows') } });
+      out.replaceChildren(h('p', {}, '✅ Workspace created. Send this private invite link to the client (valid 14 days, one use):'),
+        h('pre', { class: 'log' }, r.inviteUrl), h('button', { type: 'button', class: 'ghost', onclick: () => navigator.clipboard.writeText(r.inviteUrl) }, 'Copy link'));
+      list();
+    } catch (x) { out.textContent = x.message; }
+  } }, h('h3', {}, 'Onboard a client'),
+  h('input', { name: 'business', placeholder: 'Business name', required: true, value: pre?.business ?? '' }),
+  h('div', { class: 'counties' }, Object.entries(WORKFLOWS).map(([k, w]) => h('label', {}, h('input', { type: 'checkbox', name: 'workflows', value: k }), ` ${w.label}`))),
+  h('button', {}, 'Create private workspace & invite link'), out);
+  const table = h('div'); const detail = h('div');
+  async function list() {
+    const rows = await api('/api/clients');
+    table.replaceChildren(rows.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Business', 'Services', 'Status', 'Created'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, rows.map((c) => h('tr', { class: 'click', onclick: () => show(c.id) }, h('td', {}, c.business),
+        h('td', { class: 'small' }, JSON.parse(c.workflows).map((w) => WORKFLOWS[w]?.label ?? w).join(', ')), h('td', {}, c.status), h('td', { class: 'small' }, c.created_at))))) : h('p', { class: 'muted' }, 'No clients yet.'));
+  }
+  async function show(id) {
+    const c = await api(`/api/clients/${id}`); const s = c.summary;
+    const inv = h('div', { class: 'small' });
+    detail.replaceChildren(h('section', { class: 'card' }, h('h3', {}, c.business, ' ', h('span', { class: 'chip' }, c.status)),
+      h('p', { class: 'muted small' }, 'Bizzle sees setup progress and which keys exist — never key values. The client\'s settings live in their own workspace database.'),
+      !s ? h('p', {}, 'The client deleted their workspace.') : [
+        s.live ? h('p', {}, 'Live site: ', h('a', { href: `/s/${c.slug}`, target: '_blank' }, `${location.origin}/s/${c.slug}`)) : null,
+        h('p', {}, h('strong', {}, 'Still needed: '), s.missing.length ? s.missing.join(', ') : 'nothing — ready'),
+        h('p', {}, h('strong', {}, 'Keys: '), s.secrets.length ? s.secrets.map((k) => `${k.name} ${k.set ? (k.verifyResult ?? 'saved') : (k.optional ? 'not needed yet' : 'missing')}`).join(' · ') : 'none required'),
+        s.report ? h('p', {}, h('strong', {}, 'Security check: '), `${s.report.target} ${s.report.score}/100 — `, s.report.findings.filter((f) => f.status !== 'pass').map((f) => f.title).join(', ') || 'all clear') : null,
+        h('p', {}, h('button', { type: 'button', class: 'ghost', onclick: async () => { const r = await api(`/api/clients/${id}/invite`, { method: 'POST' }); inv.replaceChildren(h('pre', { class: 'log' }, r.inviteUrl)); } }, 'New invite link'), ' ',
+          h('a', { class: 'button', href: `/api/clients/${id}/runbook.md` }, 'Download runbook (safe for AI agents)'), ' ',
+          h('button', { type: 'button', class: 'ghost', onclick: async () => { try { await api(`/api/clients/${id}/scan`, { method: 'POST' }); show(id); } catch (x) { inv.textContent = x.message; } } }, 'Run security check')), inv,
+        h('details', {}, h('summary', {}, 'Client access log'), h('ul', { class: 'activity' }, s.audit.map((a) => h('li', {}, h('small', { class: 'muted' }, `${a.at} · ${a.actor}`), h('div', {}, a.action, a.detail ? ` — ${a.detail}` : '')))))]));
+  }
+  $('#main').replaceChildren(h('h1', {}, 'Clients'), h('p', { class: 'muted' }, 'Each client gets a private, encrypted workspace and their own portal. Their information never enters this sales database.'), form, detail, table);
+  list();
 }
 
 // ---------- Quotes ----------

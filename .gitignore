@@ -4,3 +4,5 @@ data/*.db-*
 .env
 .wrangler/
 src/static-assets.js
+data/.workspace-key
+data/workspaces/

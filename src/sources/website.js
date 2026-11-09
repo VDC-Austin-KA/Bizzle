@@ -46,7 +46,7 @@ function isPrivateIp(ip) {
   return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
 }
 
-async function assertPublic(url) {
+export async function assertPublic(url) {
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Only http(s) URLs are scanned');
   const host = url.hostname.replace(/^\[|\]$/g, '');
   if (/^(localhost|.*\.local|.*\.internal)$/i.test(host)) throw new Error('Refusing to scan a private address');

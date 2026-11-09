@@ -1,6 +1,8 @@
 // API handler shared by Cloudflare Workers (src/worker.js) and the local Node server (src/server.js).
 // Standard Request → Response, async DB (see db.js).
 import { upsertLead, rowToLead, STAGES } from './db.js';
+import { HttpError, fail, cookie, readJson } from './http.js';
+import { portalRoutes } from './portal.js';
 import { createUser, changePassword, verifyPassword, createSession, userForToken, destroySession, purgeExpiredSessions, throttled, recordFailure } from './auth.js';
 import { PERMISSIONS as P, ROLES, can } from './rbac.js';
 import { scoreLead, strategyFor, SEGMENTS } from './scoring.js';
@@ -21,7 +23,6 @@ const quoteLimited = (ip) => {
 };
 const clean = (v, max) => (v == null ? null : String(v).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max) || null);
 
-const MAX_BODY = 2_000_000;
 const MAX_REGISTRY_IMPORT = 200;
 // Alpha mode (ALPHA_MODE=true): shared demo logins, one per access portal, shown as buttons on the sign-in page.
 export const DEMO_PASSWORD = 'alpha2026!';
@@ -46,19 +47,6 @@ export async function takeGoogle(db, n) {
 }
 const HOME = { owner: 'leads', analyst: 'leads', sales: 'pipeline' }; // landing zone per role // keeps one request well under Workers' per-request subrequest limits
 
-class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
-const fail = (status, msg) => { throw new HttpError(status, msg); };
-
-const cookie = (req, name) => (req.headers.get('cookie') ?? '').split(';').map((c) => c.trim().split('='))
-  .find(([k]) => k === name)?.[1];
-
-async function readJson(req) {
-  // JSON-only bodies + SameSite=Strict cookie = CSRF protection for this API.
-  if (!String(req.headers.get('content-type')).startsWith('application/json')) fail(415, 'Content-Type must be application/json');
-  const text = await req.text();
-  if (text.length > MAX_BODY) fail(413, 'Body too large');
-  try { return JSON.parse(text || '{}'); } catch { fail(400, 'Invalid JSON'); }
-}
 
 // Validate a manually entered / CSV lead. Only these fields are accepted from users.
 export function manualLead(input) {
@@ -77,7 +65,7 @@ export function manualLead(input) {
 
 const withScore = (row) => { const lead = rowToLead(row); return { ...lead, ...scoreLead(lead) }; };
 
-export function createApp(db, { fetchImpl, secureCookies = false, alpha = false } = {}) {
+export function createApp(db, { fetchImpl, secureCookies = false, alpha = false, workspaces = null, origin = null } = {}) {
   let demoReady = null;
   const demoUsers = () => (demoReady ??= ensureDemoUsers(db).catch((e) => { demoReady = null; throw e; }));
   const allLeads = async () => (await db.all('SELECT * FROM leads')).map(withScore);
@@ -296,6 +284,7 @@ export function createApp(db, { fetchImpl, secureCookies = false, alpha = false 
       return { ok: true };
     }],
   ];
+  if (workspaces) routes.push(...portalRoutes({ db, workspaces, secureCookies, origin }));
 
   return async function handle(req, { ip = 'unknown' } = {}) {
     const url = new URL(req.url);
