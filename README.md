@@ -1,102 +1,116 @@
 # Bizzle
 
-Lead intelligence for selling AI implementation to "boring" local businesses in **Central Texas**: HVAC, dental, legal, property management, auto repair and similar trades.
+Lead intelligence for selling AI implementation to "boring" local businesses in **Central Texas**: HVAC, plumbing, dental, legal, restaurants, salons and similar trades.
 
-Bizzle finds and ranks prospects, explains why each one scored as it did, and generates a pitch strategy with ROI estimates. Each part of the app is a separate permission zone.
+Bizzle uses only real data. Businesses come from Texas state records and Google. Each lead is checked against live sources and scored only on what was observed, and anything not checked yet is shown as unknown rather than guessed. The app is split into permission-based zones for owner, analyst and sales roles.
 
 ## Quick start
 
 Requires **Node ≥ 22.5**. There are no npm dependencies: it uses the built-in `node:sqlite`, `node:http` and `node:crypto`.
 
 ```bash
-npm run seed     # creates users + 45 FICTIONAL demo businesses (idempotent)
-npm start        # http://localhost:3000
+export GOOGLE_PLACES_API_KEY=...   # optional but strongly recommended (GOOGLE_MAPS_API_KEY also works)
+npm run seed                       # creates logins only — no business data is seeded
+npm start                          # http://localhost:3000
 npm test
 ```
 
-Dev logins (seeded only when `NODE_ENV` ≠ `production`):
+Then open **Lead Finder → Source new leads**:
 
-| Role    | Email                  | Password            |
-|---------|------------------------|---------------------|
-| owner   | owner@bizzle.local     | change-me-owner     |
-| analyst | analyst@bizzle.local   | change-me-analyst   |
-| sales   | sales@bizzle.local     | change-me-sales     |
+1. **Texas Comptroller registry.** Pick counties and an industry, then click Import.
+2. **Enrich.** Pulls the Google listing, scans the website and checks state records.
+3. Sort by score and open a lead to see its evidence and talking points.
 
-In production, set `BIZZLE_OWNER_EMAIL` and `BIZZLE_OWNER_PASSWORD` before you seed, then add other users from the Admin zone.
+Dev logins (created only when `NODE_ENV` ≠ `production`): `owner@bizzle.local` / `change-me-owner`, `analyst@bizzle.local` / `change-me-analyst`, `sales@bizzle.local` / `change-me-sales`. In production, set `BIZZLE_OWNER_EMAIL` and `BIZZLE_OWNER_PASSWORD` before you seed.
+
+## Data sources
+
+| Source | What it provides | Key needed |
+|---|---|---|
+| Texas Comptroller, Active Sales Tax Permit Holders ([`jrea-zgmq`](https://data.texas.gov/d/jrea-zgmq)) | Every registered outlet: name, address, county, NAICS industry code, when that location's permit began, taxpayer HQ, active location count | No (`SOCRATA_APP_TOKEN` raises rate limits) |
+| Texas Comptroller, Active Franchise Tax Permit Holders ([`9cir-efmm`](https://data.texas.gov/d/9cir-efmm)) | The legal entity's Texas charter date, which is the true business age | No |
+| Texas Comptroller, Mixed Beverage Sales Receipts ([`g5bj-yb6k`](https://data.texas.gov/d/g5bj-yb6k)) | Monthly alcohol sales per licensed location, giving trailing-12-month revenue and year-over-year growth for bars and restaurants | No |
+| Google Places API (New), Text Search | Listing match, rating, review count, website, phone, open/closed status, Maps link; also discovers industries that don't hold sales-tax permits | Yes |
+| Live website scan | Which booking, ordering, chat and review tools the business already uses, plus mobile-friendliness, HTTPS and copyright year | No |
+
+The registry covers all 14 playbook industries in Travis, Williamson and Hays counties. For example, it lists about 1,100 HVAC, plumbing and electrical outlets, about 10,000 restaurants, and about 130 dental offices. Industries that rarely collect sales tax (dental, legal, medical) are better sourced with **Google search**.
+
+**Google billing.** Requesting rating and website fields bills at Google's *Text Search Enterprise* rate. Each lead's enrichment makes one or two Google calls, and bulk enrichment is capped at 50 leads per run.
+
+## Accuracy rules
+
+These rules were found and fixed by checking live output against real records:
+
+- **Google matching never guesses.** A listing is accepted only in these cases:
+  - The street address, suite and ZIP agree, and the names share a distinctive word.
+  - The street number, suite and ZIP agree when the road has two names, as with "N Highway 183" and "Research Blvd".
+  - Every distinctive word of the registry name appears in Google's name, in the same city.
+- **Rejected Google results:**
+  - bare-address results;
+  - other tenants in the same building;
+  - apartment complexes for home-based businesses;
+  - same-name businesses in other cities;
+  - single-word overlaps, such as "KS Southwest Austin LLC" against "Southwest" the airline.
+- **Business age** comes from the entity's state charter date, not a location's permit date. A young entity behind an established brand (300+ reviews) is flagged as a *likely ownership change*, not as a new business.
+- **Website scans** identify themselves honestly (`BizzleSiteCheck`) and never try to get past bot protection:
+  - A blocked site is shown as *"review manually"* and is not counted as a gap.
+  - Only known vendor signatures count; a plain Facebook "like" script is not a chat widget.
+  - Each scan also reads the page's Google Tag Manager containers and first-party scripts, which catches widgets injected there.
+- **Alcohol revenue** is reported only for the location whose address matches, and year-over-year growth only when a full prior year exists.
+
+## Scoring (`src/scoring.js`)
+
+Each lead gets a score from 0 to 100, with a breakdown in the UI. Factors with no data score 0 and are marked unknown, and **coverage** shows how much of the score is backed by checked data.
+
+| Factor | Max | Evidence |
+|---|---|---|
+| Industry AI fit | 25 | NAICS → playbook. This is Bizzle's editorial weighting and the only input that isn't data. |
+| Digital gaps | 25 | Website scan: no booking, no chat, no review tool, no ordering, not mobile, stale site. Also a missing website on Google. |
+| Customer demand | 20 | Google review volume and rating, or real alcohol sales |
+| Growth momentum | 15 | Entity age, new locations in the last 12 months, revenue growth |
+| Local roots & scale | 15 | HQ in Central Texas, number of active Texas locations |
+
+Segments:
+
+- **Up-and-coming**: entity ≤ 3 years old without an established review base, a new location, or alcohol sales up 20%+ year over year.
+- **Popular local favorite**: 250+ reviews at 4.5★ or higher, or $1M+ in alcohol sales over 12 months.
+- **Hometown anchor**: Central Texas HQ with 3+ locations, or an entity 10+ years old.
+- **Closed**: closed according to Google. These are hidden by default.
+
+**Strategy** recommends only use cases backed by an observed gap, and shows the evidence for each, for example "No online booking/scheduling tool detected on their website". It also lists tools the business already uses, so reps don't pitch what it already has. No invented prices or ROI figures are shown.
 
 ## Zones & roles
 
 | Zone | Permission | owner | analyst | sales |
 |---|---|:-:|:-:|:-:|
-| **Lead Finder**: browse/filter ranked leads | `leads:read` | ✓ | ✓ | ✓ |
-| Sourcing: CSV import, Google Places discovery | `leads:write` | ✓ | ✓ | |
-| **Strategy**: pitch, pilot, ROI, talking points | `strategy:read` | ✓ | ✓ | ✓ |
-| **Pipeline**: stages, value, notes | `pipeline:write` | ✓ | | ✓ |
-| **Analytics**: funnel, segments, top opportunities | `analytics:read` | ✓ | ✓ | |
-| **Admin**: users & roles | `admin:users` | ✓ | | |
+| Lead Finder (browse, refresh a lead) | `leads:read` | ✓ | ✓ | ✓ |
+| Sourcing & bulk enrichment | `leads:write` | ✓ | ✓ | |
+| Strategy | `strategy:read` | ✓ | ✓ | ✓ |
+| Pipeline | `pipeline:write` | ✓ | | ✓ |
+| Analytics | `analytics:read` | ✓ | ✓ | |
+| Admin | `admin:users` | ✓ | | |
 
-The server enforces permissions on every API route (`src/rbac.js`). The UI only hides zones that a role can't open. Sales reps can update only unassigned leads, which they claim automatically when they do, and their own leads. The owner can update and reassign any lead.
+The server enforces permissions on every API route. Sales reps can work only unassigned leads, which they claim automatically when they do, and their own leads.
 
-## How leads are ranked (`src/scoring.js`)
+## Security
 
-Each lead gets a score from 0 to 100. The breakdown appears in the UI so reps can see *why* a lead scored as it did:
-
-| Factor | Max | Signals |
-|---|---|---|
-| Industry AI fit | 30 | Per-industry fit from `src/playbooks.js` |
-| Automation need | 25 | No website, no online booking, no chat, low review response rate |
-| Capacity to buy | 20 | Employee count (log scale) |
-| Growth momentum | 15 | Hiring, new location, share of reviews from the last 90 days |
-| Central Texas proximity | 10 | Locally headquartered, core metro county (Travis/Williamson/Hays) |
-
-Tiers: **A** ≥ 75, **B** ≥ 60, **C** ≥ 45, otherwise **D**.
-
-Segments (a lead can match more than one):
-
-- **Up-and-coming**: ≤ 3 years old, and either fast review growth, hiring or a new location.
-- **Popular local favorite**: 300+ reviews and a rating of 4.5 or higher.
-- **Hometown anchor**: headquartered locally, 50+ employees, 10+ years in business.
-
-**Strategy** combines the industry playbook with the lead's gaps:
-
-- Use cases are ordered so the ones that fix the lead's gaps come first; the top two become the pilot.
-- The pitch angle depends on the segment.
-- Talking points come from the lead's signals.
-- ROI = estimated hours saved × a $35/hr loaded front-office rate, compared with pilot setup and monthly fees.
-
-Playbook prices and hours are planning defaults. Tune them in `src/playbooks.js` as real deals close.
-
-## Getting real leads
-
-- **CSV import** (Lead Finder → Source new leads). Columns match the lead fields: `name` (required), `industry`, `city`, `phone`, `website`, `employees`, `years_in_business`, `rating`, `review_count`, `reviews_last_90d`, `review_response_rate`, `hiring`, `new_location`, `locally_headquartered`, `has_online_booking`, `has_chat`. Each row is validated, and errors are reported per row.
-- **Google Places discovery.** Set `GOOGLE_PLACES_API_KEY` to search "HVAC contractor in Round Rock, TX" and similar queries. Places supplies the name, address, phone, website, rating and review count. Fields Places can't know (employees, booking, chat, hiring) start at their defaults and should be filled in by a rep.
+- Passwords are hashed with scrypt.
+- Sessions use random 256-bit tokens in an `HttpOnly; SameSite=Strict` cookie, and the API accepts only JSON bodies. Together these guard against CSRF.
+- Static pages are served with a strict CSP, the UI never uses `innerHTML`, and only `http(s)` links are rendered.
+- Failed logins are throttled per IP.
+- Registry queries use whitelisted counties and industries only.
+- The website scanner refuses private and internal addresses at every redirect (SSRF guard).
 
 ## Layout
 
 ```
-src/server.js      HTTP API + static files, route → permission table
-src/rbac.js        roles → permissions (zones)
-src/scoring.js     scoring, segments, strategy/ROI (pure functions)
-src/playbooks.js   per-industry AI use cases, pains, objections, pricing
-src/db.js          SQLite schema, input normalization
-src/auth.js        scrypt passwords, DB-backed sessions, login throttle
-src/csv.js         CSV parser
-src/sources/       external lead sources (Google Places)
-public/            vanilla-JS single-page UI
-data/seed-businesses.json   fictional demo data
+src/server.js            API routes + static files
+src/sources/comptroller.js  Texas open data (permits, charter dates, alcohol sales)
+src/sources/places.js    Google Places discovery + strict matching
+src/sources/website.js   website scan + vendor signatures
+src/enrich.js            enrichment pipeline
+src/scoring.js           scoring, segments, evidence-based strategy
+src/playbooks.js         industries, NAICS ranges, use cases
+src/db.js                SQLite schema, merge-on-import
+public/                  vanilla-JS UI
 ```
-
-## Security notes
-
-- Passwords are hashed with scrypt.
-- Sessions use random 256-bit tokens stored server-side, in an `HttpOnly; SameSite=Strict` cookie that is also `Secure` in production. They expire after 12 hours.
-- The API accepts only JSON bodies, which together with the SameSite cookie guards against CSRF.
-- Static pages are served with a strict CSP, and the UI never uses `innerHTML`.
-- Failed logins are throttled per IP.
-
-## Roadmap ideas
-
-- Enrichment jobs: detect online booking or chat from the website, track hiring from job boards, pull new business filings from the Texas SOS / Comptroller.
-- A client portal zone, so businesses you've signed can see their implementation progress.
-- Outreach sequences (email/SMS) linked to pipeline stages.
-- Postgres and a job queue, once data volume needs them.

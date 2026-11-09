@@ -1,17 +1,32 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { openDb, normalizeLead, insertLead } from '../src/db.js';
+import { openDb, upsertLead } from '../src/db.js';
 import { createUser } from '../src/auth.js';
-import { createApp } from '../src/server.js';
+import { createApp, manualLead } from '../src/server.js';
+
+delete process.env.GOOGLE_PLACES_API_KEY; delete process.env.GOOGLE_MAPS_API_KEY;
+
+// Fake data.texas.gov: one registry outlet, then the outlet-count queries.
+const outlet = { taxpayer_number: '32012345678', taxpayer_name: 'HAMBONE PLUMBING LLC', taxpayer_organization_type: 'CL', taxpayer_city: 'GEORGETOWN',
+  taxpayer_state: 'TX', taxpayer_county_code: '246', outlet_number: '1', outlet_name: 'HAMBONE PLUMBING', outlet_address: '818 W 2ND ST',
+  outlet_city: 'TAYLOR', outlet_zip_code: '76574', outlet_county_code: '246', outlet_naics_code: '238220', outlet_first_sales_date: '2019-03-01T00:00:00.000' };
+const seenUrls = [];
+const fetchImpl = async (url) => {
+  seenUrls.push(String(url));
+  const u = new URL(url);
+  const body = u.pathname.includes('9cir-efmm') ? [{ taxpayer_number: outlet.taxpayer_number, sos_charter_date: '2019-10-22T00:00:00.000' }]
+    : u.searchParams.get('$select') ? [{ taxpayer_number: outlet.taxpayer_number, n: '2' }] : [outlet];
+  return { ok: true, json: async () => body };
+};
 
 let server, base;
 before(async () => {
   const db = openDb(':memory:');
   for (const role of ['owner', 'analyst', 'sales']) createUser(db, { email: `${role}@t.test`, name: role, role, password: 'password-123' });
   createUser(db, { email: 'sales2@t.test', name: 'sales2', role: 'sales', password: 'password-123' });
-  insertLead(db, normalizeLead({ name: 'Lead One', industry: 'dental', city: 'Austin', employees: 30 }).lead);
-  server = createServer(createApp(db)).listen(0);
+  upsertLead(db, { name: 'Lead One', industry: 'dental', city: 'Austin', source: 'manual' });
+  server = createServer(createApp(db, { fetchImpl })).listen(0);
   base = `http://localhost:${server.address().port}`;
 });
 after(() => server.close());
@@ -39,38 +54,65 @@ test('zones are enforced per role', async () => {
   assert.equal((await analyst('/api/users')).status, 403);
   assert.equal((await analyst('/api/analytics')).status, 200);
   assert.equal((await sales('/api/analytics')).status, 403);
-  assert.equal((await sales('/api/leads', { method: 'POST', body: { name: 'x' } })).status, 403);
+  assert.equal((await sales('/api/discover/registry', { method: 'POST', body: { industry: 'dental' } })).status, 403);
   assert.equal((await analyst('/api/leads/1', { method: 'PATCH', body: { stage: 'contacted' } })).status, 403);
 });
 
-test('lead detail includes score and strategy for permitted roles', async () => {
+test('registry discovery imports real-shaped outlets with outlet counts, and re-import merges', async () => {
+  const analyst = await login('analyst');
+  const r = await (await analyst('/api/discover/registry', { method: 'POST', body: { counties: ['246'], industry: 'hvac_plumbing', openedWithinYears: 3 } })).json();
+  assert.deepEqual(r, { found: 1, created: 1, updated: 0 });
+  const where = new URL(seenUrls[0]).searchParams.get('$where');
+  assert.match(where, /outlet_county_code in\('246'\)/);
+  assert.match(where, /outlet_naics_code between 238210 and 238229/);
+  assert.match(where, /taxpayer_organization_type != 'IS'/);
+  const again = await (await analyst('/api/discover/registry', { method: 'POST', body: { counties: ['246'], industry: 'hvac_plumbing' } })).json();
+  assert.deepEqual(again, { found: 1, created: 0, updated: 1 });
+  const [lead] = await (await analyst('/api/leads?q=hambone')).json();
+  assert.equal(lead.outlets_total, 2);
+  assert.equal(lead.entity_formed_date, '2019-10-22');
+  assert.ok(lead.segments.includes('anchor') === false); // 2 outlets, < 10 yrs → not an anchor
+});
+
+test('discovery inputs are whitelisted', async () => {
+  const owner = await login('owner');
+  assert.equal((await owner('/api/discover/registry', { method: 'POST', body: { industry: "x' OR 1=1" } })).status, 400);
+  assert.equal((await owner('/api/discover/registry', { method: 'POST', body: { industry: 'dental', counties: ["227') OR ('1'='1"] } })).status, 400);
+});
+
+test('Google discovery returns 501 without a key', async () => {
+  const owner = await login('owner');
+  assert.equal((await owner('/api/discover/places', { method: 'POST', body: { query: 'dentist', city: 'Austin' } })).status, 501);
+});
+
+test('lead detail includes evidence-based strategy for permitted roles', async () => {
   const sales = await login('sales');
   const lead = await (await sales('/api/leads/1')).json();
-  assert.ok(lead.score > 0 && lead.strategy.pilot.length === 2);
+  assert.ok(Array.isArray(lead.strategy.recommended) && lead.coverage >= 0);
 });
 
 test('sales claims unassigned lead; other reps are blocked', async () => {
   const sales = await login('sales'), sales2 = await login('sales2');
   const r = await sales('/api/leads/1', { method: 'PATCH', body: { stage: 'contacted', note: 'Called owner' } });
   assert.equal(r.status, 200);
-  const lead = await r.json();
-  assert.equal(lead.stage, 'contacted');
+  assert.equal((await r.json()).stage, 'contacted');
   assert.equal((await sales2('/api/leads/1', { method: 'PATCH', body: { stage: 'won' } })).status, 403);
   const detail = await (await sales('/api/leads/1')).json();
   assert.deepEqual(detail.activities.map((a) => a.kind), ['note', 'stage']);
 });
 
-test('analyst imports CSV with per-row validation', async () => {
+test('CSV import validates rows', async () => {
   const analyst = await login('analyst');
-  const csv = 'name,industry,city,employees,rating\nAcme Roofing,roofing_construction,Kyle,12,4.6\n,dental,Austin,5,4\nBad Rating,legal,Austin,3,9';
+  const csv = 'name,address,city,zip,website,industry\nAcme Roofing,1 Main St,Kyle,78640,acmeroof.com,roofing_construction\n,x,Austin,,,\nBad,1 A St,Austin,7,,\nBad2,,,,,unknown_ind';
   const r = await (await analyst('/api/leads/import', { method: 'POST', body: { csv } })).json();
-  assert.equal(r.imported, 1);
-  assert.equal(r.errors.length, 2);
+  assert.equal(r.created, 1);
+  assert.equal(r.errors.length, 3);
 });
 
-test('discover returns 501 without a Places key', async () => {
-  const owner = await login('owner');
-  assert.equal((await owner('/api/discover', { method: 'POST', body: { query: 'hvac', city: 'Austin' } })).status, 501);
+test('manual lead validation', () => {
+  assert.ok(manualLead({}).error);
+  assert.ok(manualLead({ name: 'X', website: 'javascript:alert(1)' }).error);
+  assert.equal(manualLead({ name: ' X ', website: 'acme.com' }).lead.website, 'https://acme.com/');
 });
 
 test('non-JSON bodies are refused even with a valid session (CSRF guard)', async () => {

@@ -1,118 +1,165 @@
-// Explainable lead scoring, segmentation and strategy generation.
-// Everything is pure so it is easy to test and tune.
+// Explainable lead scoring from observed data only. A factor whose data hasn't been collected yet
+// scores 0 and says so — nothing is guessed. `coverage` tells the rep how complete the picture is.
 import { playbookFor } from './playbooks.js';
-
-// Central Texas service area. Core = Austin metro counties (Travis, Williamson, Hays).
-export const CITY_COUNTY = {
-  'Austin': 'Travis', 'Pflugerville': 'Travis', 'Lakeway': 'Travis', 'Manor': 'Travis',
-  'Round Rock': 'Williamson', 'Georgetown': 'Williamson', 'Cedar Park': 'Williamson', 'Leander': 'Williamson', 'Hutto': 'Williamson', 'Taylor': 'Williamson', 'Liberty Hill': 'Williamson',
-  'San Marcos': 'Hays', 'Kyle': 'Hays', 'Buda': 'Hays', 'Dripping Springs': 'Hays', 'Wimberley': 'Hays',
-  'Bastrop': 'Bastrop', 'Elgin': 'Bastrop', 'Lockhart': 'Caldwell', 'Marble Falls': 'Burnet', 'Burnet': 'Burnet',
-  'Temple': 'Bell', 'Killeen': 'Bell', 'Belton': 'Bell', 'Harker Heights': 'Bell',
-  'Waco': 'McLennan', 'New Braunfels': 'Comal', 'Seguin': 'Guadalupe',
-};
-const CORE_COUNTIES = new Set(['Travis', 'Williamson', 'Hays']);
 
 export const SEGMENTS = {
   rising: 'Up-and-coming',
   popular: 'Popular local favorite',
   anchor: 'Hometown anchor (HQ here)',
+  closed: 'Closed per Google',
   standard: 'Standard',
 };
 
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
-const velocity = (b) => (b.reviews_last_90d ?? 0) / Math.max(b.review_count ?? 0, 1);
+const yearsSince = (d, now) => (d ? (now - new Date(d)) / (365.25 * 864e5) : null);
+const usd = (n) => `$${Math.round(n).toLocaleString()}`;
+const growth = (b) => (b.mb_revenue_12mo != null && b.mb_revenue_prev_12mo > 0 ? b.mb_revenue_12mo / b.mb_revenue_prev_12mo - 1 : null);
 
-export function segmentsFor(b) {
+// Business age: the entity's Texas charter date if known; else this location's first taxable sale.
+const businessAge = (b, now) => yearsSince(b.entity_formed_date ?? b.first_sale_date, now);
+const ESTABLISHED_REVIEWS = 300; // a young entity with this many reviews is an established brand under new paperwork
+const newLocation = (b) => b.outlets_total >= 2 && b.outlets_opened_12mo > 0;
+export const ownershipChange = (b, now = Date.now()) => b.entity_formed_date != null && yearsSince(b.entity_formed_date, now) <= 1.5 && b.review_count >= ESTABLISHED_REVIEWS;
+
+export function segmentsFor(b, now = Date.now()) {
+  if (b.business_status?.startsWith('CLOSED')) return ['closed'];
+  const age = businessAge(b, now);
+  const g = growth(b);
   const s = [];
-  if (b.years_in_business <= 3 && (velocity(b) >= 0.25 || b.hiring || b.new_location)) s.push('rising');
-  if (b.review_count >= 300 && b.rating >= 4.5) s.push('popular');
-  if (b.locally_headquartered && b.employees >= 50 && b.years_in_business >= 10) s.push('anchor');
+  if ((age != null && age <= 3 && !(b.review_count >= ESTABLISHED_REVIEWS)) || newLocation(b) || (g != null && g >= 0.2)) s.push('rising');
+  if ((b.review_count >= 250 && b.rating >= 4.5) || b.mb_revenue_12mo >= 1_000_000) s.push('popular');
+  if (b.hq_local && (b.outlets_total >= 3 || (age != null && age >= 10))) s.push('anchor');
   return s.length ? s : ['standard'];
 }
 
-// 0–100 opportunity score with a factor-by-factor breakdown so reps can see *why*.
-export function scoreLead(b) {
+// Gaps observed on the business's own website (or absence of one on Google).
+export function observedGaps(b) {
+  const w = b.web_signals;
+  if (!w) return b.places_id && !b.website ? ['website'] : [];
+  if (w.blocked || w.unknown) return [];
+  if (!w.reachable) return ['website'];
+  return [
+    !w.booking.length && 'booking',
+    !w.chat.length && 'chat',
+    !w.reviews.length && 'reviews',
+    b.industry === 'restaurant' && !w.ordering.length && 'ordering',
+  ].filter(Boolean);
+}
+
+export function scoreLead(b, now = Date.now()) {
   const factors = [];
-  const add = (key, label, points, max, reasons) => factors.push({ key, label, points: Math.round(points), max, reasons });
+  const add = (key, label, points, max, reasons, known = true) =>
+    factors.push({ key, label, points: Math.round(clamp(points, 0, max)), max, reasons, known });
 
   const pb = playbookFor(b.industry);
-  add('fit', 'Industry AI fit', pb.fit * 30, 30, [`${pb.label}: ${Math.round(pb.fit * 100)}% fit`]);
+  add('fit', 'Industry AI fit', pb.fit * 25, 25, [`${pb.label}${b.naics ? ` (NAICS ${b.naics})` : ''}: ${Math.round(pb.fit * 100)}% fit`], !!b.industry);
 
-  let need = 0; const needR = [];
-  if (!b.has_website) { need += 5; needR.push('No website'); }
-  if (!b.has_online_booking) { need += 8; needR.push('No online booking'); }
-  if (!b.has_chat) { need += 5; needR.push('No chat / instant response'); }
-  const rr = b.review_response_rate ?? 0;
-  need += (1 - rr) * 7; if (rr < 0.3) needR.push(`Responds to only ${Math.round(rr * 100)}% of reviews`);
-  add('need', 'Automation need (digital gaps)', need, 25, needR);
+  // Digital gaps — from the live website scan.
+  const w = b.web_signals;
+  if (w?.reachable) {
+    let pts = 0; const r = [];
+    if (!w.booking.length) { pts += 9; r.push('No online booking/scheduling found'); } else r.push(`Books via ${w.booking.join(', ')}`);
+    if (!w.chat.length) { pts += 7; r.push('No chat/text widget found'); } else r.push(`Chat via ${w.chat.join(', ')}`);
+    if (!w.reviews.length) { pts += 3; r.push('No review-generation tool found'); }
+    if (b.industry === 'restaurant' && !w.ordering.length) { pts += 3; r.push('No online ordering found'); }
+    if (!w.mobile_friendly) { pts += 2; r.push('Not mobile-optimized'); }
+    if (!w.https) { pts += 1; r.push('No HTTPS'); }
+    const stale = w.copyright_year && new Date(now).getFullYear() - w.copyright_year >= 3;
+    if (stale) { pts += 2; r.push(`Site footer says © ${w.copyright_year}`); }
+    add('gaps', 'Digital gaps (website scan)', pts, 25, r);
+  } else if (w && (w.blocked || w.unknown)) add('gaps', 'Digital gaps (website scan)', 0, 25, [`Couldn't check site: ${w.error}`], false);
+  else if (w) add('gaps', 'Digital gaps (website scan)', 20, 25, [`Website broken (${w.error})`]);
+  else if (b.places_id && !b.website) add('gaps', 'Digital gaps (website scan)', 22, 25, ['No website listed on their Google profile']);
+  else add('gaps', 'Digital gaps (website scan)', 0, 25, [b.website ? 'Website not scanned yet' : 'No website on file — enrich via Google'], false);
 
-  const emp = Math.max(b.employees ?? 1, 1);
-  add('capacity', 'Capacity to buy', clamp(Math.log10(emp) / Math.log10(250), 0, 1) * 20, 20, [`${emp} employees`]);
+  // Demand — Google review volume/rating or real alcohol-sales revenue, whichever is stronger.
+  const dem = []; let demPts = 0; let demKnown = false;
+  if (b.places_id) {
+    demKnown = true;
+    const rev = clamp(Math.log10((b.review_count ?? 0) + 1) / Math.log10(1000), 0, 1) * 16 + (b.rating >= 4.2 ? 4 : 0);
+    demPts = Math.max(demPts, rev); dem.push(`${b.rating ?? '–'}★ from ${b.review_count ?? 0} Google reviews`);
+  }
+  if (b.mb_revenue_12mo != null) {
+    demKnown = true;
+    demPts = Math.max(demPts, clamp((Math.log10(Math.max(b.mb_revenue_12mo, 1)) - 4.5) / 2, 0, 1) * 20);
+    dem.push(`${usd(b.mb_revenue_12mo)} alcohol sales, trailing 12 mo (TX Comptroller, through ${b.mb_latest_month})`);
+  }
+  if (!demKnown && b.places_checked_at) dem.push('No Google listing matched the registry name/address — verify manually');
+  add('demand', 'Customer demand', demPts, 20, dem.length ? dem : ['Not checked yet — enrich via Google'], demKnown);
 
+  // Momentum — entity age, new locations, revenue growth (all from state records).
+  const g = growth(b);
   let mom = 0; const momR = [];
-  if (b.hiring) { mom += 5; momR.push('Actively hiring'); }
-  if (b.new_location) { mom += 4; momR.push('Opening a new location'); }
-  const v = velocity(b); mom += Math.min(6, v * 20);
-  if (v >= 0.15) momR.push(`${Math.round(v * 100)}% of reviews in last 90 days`);
-  add('momentum', 'Growth momentum', mom, 15, momR);
+  if (b.entity_formed_date) {
+    const age = yearsSince(b.entity_formed_date, now);
+    if (ownershipChange(b, now)) { mom += 5; momR.push(`New Texas entity (${b.entity_formed_date}) behind an established brand — likely new ownership`); }
+    else if (age <= 2) { mom += 7; momR.push(`Texas entity formed ${b.entity_formed_date}`); }
+    else if (age <= 3) { mom += 5; momR.push(`Texas entity formed ${b.entity_formed_date}`); }
+    else momR.push(`Texas entity since ${b.entity_formed_date.slice(0, 4)}`);
+  } else if (b.first_sale_date) {
+    const age = yearsSince(b.first_sale_date, now);
+    if (age < 0) { mom += 7; momR.push(`Newly registered — first sales expected ${b.first_sale_date}`); }
+    else if (age <= 3 && !(b.review_count >= ESTABLISHED_REVIEWS)) { mom += age <= 2 ? 7 : 5; momR.push(`Sales-tax permit began ${b.first_sale_date}`); }
+    else momR.push(`Sales-tax permit since ${b.first_sale_date.slice(0, 4)}`);
+  }
+  if (newLocation(b)) { mom += 5; momR.push(`${b.outlets_opened_12mo} of ${b.outlets_total} locations opened in the last 12 months`); }
+  if (g != null) { mom += clamp(g / 0.3, 0, 1) * 6; momR.push(`Alcohol sales ${g >= 0 ? '+' : ''}${Math.round(g * 100)}% year over year`); }
+  add('momentum', 'Growth momentum', mom, 15, momR.length ? momR : ['No registry or revenue data'], !!(b.entity_formed_date || b.first_sale_date) || g != null);
 
-  const county = CITY_COUNTY[b.city];
+  // Local roots & scale — taxpayer HQ address and active outlet count from the state registry.
   let loc = 0; const locR = [];
-  if (b.locally_headquartered) { loc += 5; locR.push('Locally headquartered'); }
-  if (CORE_COUNTIES.has(county)) { loc += 5; locR.push(`${county} County (core metro)`); }
-  else if (county) { loc += 3; locR.push(`${county} County`); }
-  add('locality', 'Central Texas proximity', loc, 10, locR);
+  if (b.hq_local != null) {
+    if (b.hq_local) { loc += 8; locR.push(`Headquartered in ${b.hq_city}, TX`); } else locR.push(`HQ outside Central TX (${b.hq_city ?? '?'}, ${b.hq_state ?? '?'})`);
+  }
+  if (b.outlets_total != null) { loc += clamp((b.outlets_total - 1) * 3, 0, 7); locR.push(`${b.outlets_total} active Texas location(s)`); }
+  add('local', 'Local roots & scale', loc, 15, locR.length ? locR : ['No registry data'], b.hq_local != null);
 
-  const score = clamp(factors.reduce((t, f) => t + f.points, 0), 0, 100);
-  const tier = score >= 75 ? 'A' : score >= 60 ? 'B' : score >= 45 ? 'C' : 'D';
-  return { score, tier, factors, segments: segmentsFor(b) };
+  const closed = b.business_status?.startsWith('CLOSED');
+  const score = closed ? 0 : factors.reduce((t, f) => t + f.points, 0);
+  const known = factors.filter((f) => f.known);
+  return {
+    score, tier: score >= 70 ? 'A' : score >= 55 ? 'B' : score >= 40 ? 'C' : 'D',
+    coverage: Math.round((known.reduce((t, f) => t + f.max, 0) / 100) * 100),
+    factors, segments: segmentsFor(b, now),
+  };
 }
 
 const PITCH = {
-  rising: 'Demand is outpacing your team — scale service without adding headcount yet.',
+  rising: 'Demand is outpacing your team — add capacity with AI before the next hire.',
   popular: "You're already winning on reputation — AI protects it at volume: every call answered, every review replied to.",
-  anchor: 'Hometown leader — modernize operations, keep the local touch, and stay ahead of national chains moving in.',
+  anchor: 'Hometown leader — modernize operations, keep the local touch, and stay ahead of national chains.',
   standard: 'Low-risk pilot on one costly manual workflow, measured in 30 days.',
+  closed: 'Google lists this business as closed — verify before outreach.',
 };
-const LOADED_HOURLY_RATE = 35; // USD, Central TX front-office loaded cost
 
-// Lead-specific strategy: prioritized use cases, pitch, talking points, ROI.
+// Lead-specific plan: use cases ranked by observed gaps, each with the evidence behind it.
 export function strategyFor(b) {
   const pb = playbookFor(b.industry);
-  const gaps = new Set([
-    !b.has_online_booking && 'booking',
-    !b.has_chat && 'chat',
-    (b.review_response_rate ?? 0) < 0.3 && 'reviews',
-  ].filter(Boolean));
-
-  const useCases = [...pb.useCases].sort((x, y) => (gaps.has(y.gap) - gaps.has(x.gap)) || y.hoursPerWeek - x.hoursPerWeek);
-  const pilot = useCases.slice(0, 2);
-  const scale = clamp((b.employees ?? 1) / 10, 0.5, 3);
-  const hoursPerWeek = Math.round(pilot.reduce((t, u) => t + u.hoursPerWeek, 0) * scale);
-  const annualSavings = hoursPerWeek * 52 * LOADED_HOURLY_RATE;
-  const firstYearCost = pilot.reduce((t, u) => t + u.setup + u.monthly * 12, 0);
-  const monthlySavings = annualSavings / 12;
-  const monthlyFees = pilot.reduce((t, u) => t + u.monthly, 0);
-  const setup = pilot.reduce((t, u) => t + u.setup, 0);
-  const net = monthlySavings - monthlyFees;
-  const paybackMonths = net > 0 ? Math.ceil(setup / net) : null;
-
+  const gaps = new Set(observedGaps(b));
+  const scanned = !!b.web_signals?.reachable || gaps.has('website');
+  const useCases = pb.useCases
+    .filter((u) => u.gap !== 'website' || gaps.has('website'))
+    .map((u) => ({ ...u, evidence: gaps.has(u.gap) ? u.why : null }))
+    .sort((x, y) => !!y.evidence - !!x.evidence);
+  const w = b.web_signals;
   const segs = segmentsFor(b);
   return {
     industry: pb.label,
     pitch: PITCH[segs[0]],
-    pains: pb.pains,
-    useCases,
-    pilot: pilot.map((u) => u.name),
+    scanned,
+    recommended: useCases.filter((u) => u.evidence),
+    otherUseCases: useCases.filter((u) => !u.evidence),
+    alreadyUses: w?.reachable ? [...w.booking, ...w.ordering, ...w.chat, ...w.reviews] : [],
     talkingPoints: [
-      ...(gaps.has('booking') ? ['They take bookings by phone only — show a live AI booking demo.'] : []),
-      ...(gaps.has('chat') ? ['No instant response channel — quantify leads lost after hours.'] : []),
-      ...(gaps.has('reviews') ? ['Unanswered reviews — show their own review page with AI-drafted replies.'] : []),
-      ...(b.hiring ? ['They are hiring — position AI as capacity before the next hire.'] : []),
-      ...(b.new_location ? ['New location opening — standardize ops across sites from day one.'] : []),
+      ...(gaps.has('booking') ? ['Their site has no online booking — demo AI booking live on their own phone number.'] : []),
+      ...(gaps.has('chat') ? ['No chat or text-back on their site — ask how they handle after-hours calls and missed leads.'] : []),
+      ...(gaps.has('reviews') && b.review_count != null ? [`${b.review_count} Google reviews at ${b.rating}★ — show AI-drafted replies to their latest reviews.`] : []),
+      ...(gaps.has('website') ? ['No working website — a site with booking and chat is a quick first win.'] : []),
+      ...(newLocation(b) ? ['They just opened a new location — standardize phones and booking across sites now.'] : []),
+      ...(ownershipChange(b) ? ['New legal entity behind an established brand — new owners often modernize; get in early.'] : []),
+      ...(growth(b) >= 0.2 ? ['Sales are up sharply year over year — position AI as capacity for the growth.'] : []),
     ],
+    pains: pb.pains,
     objections: pb.objections,
-    roi: { hoursPerWeek, annualSavings, firstYearCost, monthlyFees, setup, paybackMonths, hourlyRate: LOADED_HOURLY_RATE },
   };
 }

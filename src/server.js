@@ -2,13 +2,15 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, normalize, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDb, normalizeLead, insertLead, rowToLead, STAGES } from './db.js';
+import { openDb, upsertLead, updateLead, rowToLead, STAGES } from './db.js';
 import { createUser, verifyPassword, createSession, userForToken, destroySession, throttled, recordFailure } from './auth.js';
 import { PERMISSIONS as P, ROLES, can } from './rbac.js';
-import { scoreLead, strategyFor, SEGMENTS, CITY_COUNTY } from './scoring.js';
+import { scoreLead, strategyFor, SEGMENTS } from './scoring.js';
 import { PLAYBOOKS } from './playbooks.js';
 import { parseCsv } from './csv.js';
 import { placesEnabled, searchPlaces } from './sources/places.js';
+import { COUNTIES, fetchOutlets, fetchOutletStats } from './sources/comptroller.js';
+import { enrichLead, needsEnrichment } from './enrich.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
@@ -28,11 +30,32 @@ async function readJson(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch { fail(400, 'Invalid JSON'); }
 }
 
-const enrich = (row) => { const lead = rowToLead(row); return { ...lead, ...scoreLead(lead) }; };
+// Validate a manually entered / CSV lead. Only these fields are accepted from users.
+export function manualLead(input) {
+  const str = (v, max = 200) => (v == null ? undefined : String(v).trim().slice(0, max) || undefined);
+  const lead = { name: str(input.name), address: str(input.address), city: str(input.city, 80), zip: str(input.zip, 10),
+    phone: str(input.phone, 40), website: str(input.website, 300), industry: str(input.industry, 40) };
+  if (!lead.name) return { error: 'name is required' };
+  if (lead.industry && !PLAYBOOKS[lead.industry]) return { error: `unknown industry "${lead.industry}"` };
+  if (lead.zip && !/^\d{5}$/.test(lead.zip)) return { error: 'zip must be 5 digits' };
+  if (lead.website) {
+    try { const u = new URL(/^https?:\/\//i.test(lead.website) ? lead.website : `https://${lead.website}`);
+      if (!u.hostname.includes('.')) throw 0; lead.website = u.href; } catch { return { error: 'website is not a valid URL' }; }
+  }
+  return { lead };
+}
 
-export function createApp(db) {
-  const allLeads = () => db.prepare('SELECT * FROM leads').all().map(enrich);
-  const getLead = (id) => { const r = db.prepare('SELECT * FROM leads WHERE id = ?').get(Number(id)); return r ? enrich(r) : fail(404, 'Lead not found'); };
+const withScore = (row) => { const lead = rowToLead(row); return { ...lead, ...scoreLead(lead) }; };
+
+async function pool(items, n, fn) {
+  const out = []; let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; out[k] = await fn(items[k]); } }));
+  return out;
+}
+
+export function createApp(db, { fetchImpl } = {}) {
+  const allLeads = () => db.prepare('SELECT * FROM leads').all().map(withScore);
+  const getLead = (id) => { const r = db.prepare('SELECT * FROM leads WHERE id = ?').get(Number(id)); return r ? withScore(r) : fail(404, 'Lead not found'); };
   const logActivity = (leadId, userId, kind, body) => db.prepare('INSERT INTO activities (lead_id, user_id, kind, body) VALUES (?,?,?,?)').run(leadId, userId, kind, body);
 
   // [method, path regex, permission | null (auth only) | 'public', handler]
@@ -55,9 +78,9 @@ export function createApp(db) {
     }],
     ['GET', /^\/api\/me$/, null, ({ user }) => ({ ...user, permissions: ROLES[user.role] })],
     ['GET', /^\/api\/meta$/, null, () => ({
-      stages: STAGES, segments: SEGMENTS, cities: Object.keys(CITY_COUNTY).sort(),
+      stages: STAGES, segments: SEGMENTS, counties: COUNTIES, placesEnabled: placesEnabled(),
       industries: Object.fromEntries(Object.entries(PLAYBOOKS).map(([k, v]) => [k, v.label])),
-      placesEnabled: placesEnabled(),
+      cities: db.prepare('SELECT DISTINCT city FROM leads WHERE city IS NOT NULL ORDER BY city').all().map((r) => r.city),
     })],
 
     // Lead Finder zone
@@ -66,14 +89,16 @@ export function createApp(db) {
       const text = q.get('q')?.toLowerCase();
       const min = Number(q.get('minScore') ?? 0);
       return allLeads().filter((l) =>
-        (!q.get('segment') || l.segments.includes(q.get('segment'))) &&
+        (q.get('segment') ? l.segments.includes(q.get('segment')) : !l.segments.includes('closed')) &&
+        (!q.get('county') || l.county === q.get('county')) &&
         (!q.get('city') || l.city === q.get('city')) &&
         (!q.get('industry') || l.industry === q.get('industry')) &&
         (!q.get('stage') || l.stage === q.get('stage')) &&
+        (q.get('enriched') !== '1' || l.places_checked_at) &&
         (q.get('mine') !== '1' || l.assigned_to === user.id) &&
         l.score >= min &&
-        (!text || l.name.toLowerCase().includes(text)),
-      ).sort((a, b) => b.score - a.score);
+        (!text || `${l.name} ${l.legal_name ?? ''} ${l.address ?? ''}`.toLowerCase().includes(text)),
+      ).sort((a, b) => b.score - a.score).slice(0, Number(q.get('limit')) || 500);
     }],
     ['GET', /^\/api\/leads\/(\d+)$/, P.LEADS_READ, ({ params: [id], user }) => {
       const lead = getLead(id);
@@ -82,37 +107,69 @@ export function createApp(db) {
       return { ...lead, activities, strategy: can(user, P.STRATEGY_READ) ? strategyFor(lead) : undefined };
     }],
     ['POST', /^\/api\/leads$/, P.LEADS_WRITE, async ({ req, user }) => {
-      const { lead, error } = normalizeLead(await readJson(req));
+      const { lead, error } = manualLead(await readJson(req));
       if (error) fail(400, error);
-      const { lastInsertRowid } = insertLead(db, { source: 'manual', ...lead });
-      logActivity(lastInsertRowid, user.id, 'created', 'Lead created');
-      return getLead(lastInsertRowid);
+      const { id, created } = upsertLead(db, { ...lead, source: 'manual' });
+      logActivity(id, user.id, created ? 'created' : 'updated', created ? 'Lead added manually' : 'Merged manual entry');
+      return getLead(id);
     }],
     ['POST', /^\/api\/leads\/import$/, P.LEADS_WRITE, async ({ req }) => {
-      const { csv } = await readJson(req);
-      const rows = parseCsv(String(csv ?? ''));
-      const errors = []; let imported = 0;
+      const rows = parseCsv(String((await readJson(req)).csv ?? ''));
+      const errors = []; let created = 0, merged = 0;
       db.exec('BEGIN');
       try {
         rows.forEach((r, i) => {
-          const { lead, error } = normalizeLead({ source: 'csv', ...r });
-          if (error) errors.push(`Row ${i + 2}: ${error}`);
-          else imported += insertLead(db, lead).changes;
+          const { lead, error } = manualLead(r);
+          if (error) return errors.push(`Row ${i + 2}: ${error}`);
+          upsertLead(db, { ...lead, source: 'csv' }).created ? created++ : merged++;
         });
         db.exec('COMMIT');
       } catch (e) { db.exec('ROLLBACK'); throw e; }
-      return { imported, skipped: rows.length - imported - errors.length, errors };
+      return { created, merged, errors };
     }],
-    ['POST', /^\/api\/discover$/, P.LEADS_WRITE, async ({ req }) => {
-      if (!placesEnabled()) fail(501, 'Set GOOGLE_PLACES_API_KEY to enable live discovery');
+
+    // Discovery — real sources
+    ['POST', /^\/api\/discover\/registry$/, P.LEADS_WRITE, async ({ req }) => {
+      const { counties, industry, openedWithinYears, sort, includeSoleProprietors, limit } = await readJson(req);
+      if (!PLAYBOOKS[industry]) fail(400, 'Choose an industry');
+      if (counties != null && (!Array.isArray(counties) || counties.some((c) => !COUNTIES[c]))) fail(400, 'Unknown county');
+      const outlets = await fetchOutlets({ counties, industry, openedWithinYears, sort, includeSoleProprietors: !!includeSoleProprietors, limit }, fetchImpl);
+      const stats = await fetchOutletStats(outlets.map((o) => o.taxpayer_number), fetchImpl);
+      let created = 0;
+      db.exec('BEGIN');
+      try { for (const o of outlets) created += upsertLead(db, { ...o, ...stats[o.taxpayer_number] }).created; db.exec('COMMIT'); }
+      catch (e) { db.exec('ROLLBACK'); throw e; }
+      return { found: outlets.length, created, updated: outlets.length - created };
+    }],
+    ['POST', /^\/api\/discover\/places$/, P.LEADS_WRITE, async ({ req }) => {
+      if (!placesEnabled()) fail(501, 'Set GOOGLE_PLACES_API_KEY (or GOOGLE_MAPS_API_KEY) to search Google');
       const { query, city, industry } = await readJson(req);
-      if (!query || !CITY_COUNTY[city]) fail(400, 'query and a Central Texas city are required');
-      let imported = 0;
-      for (const p of await searchPlaces({ query: String(query).slice(0, 100), city })) {
-        const { lead } = normalizeLead({ ...p, industry });
-        if (lead) imported += insertLead(db, lead).changes;
-      }
-      return { imported };
+      if (!query || !city) fail(400, 'query and city are required');
+      if (industry && !PLAYBOOKS[industry]) fail(400, 'Unknown industry');
+      const found = await searchPlaces({ query: String(query).slice(0, 100), city: String(city).slice(0, 60) }, fetchImpl);
+      let created = 0;
+      for (const p of found) created += upsertLead(db, { ...p, industry }).created;
+      return { found: found.length, created, updated: found.length - created };
+    }],
+
+    // Enrichment — anyone who can view a lead can refresh it; bulk runs need leads:write.
+    ['POST', /^\/api\/leads\/(\d+)\/enrich$/, P.LEADS_READ, async ({ params: [id], user }) => {
+      getLead(id);
+      const { log } = await enrichLead(db, Number(id), { fetchImpl });
+      logActivity(Number(id), user.id, 'enriched', log.join('\n'));
+      return { log, lead: getLead(id) };
+    }],
+    ['POST', /^\/api\/enrich$/, P.LEADS_WRITE, async ({ req, user }) => {
+      const { limit = 10, industry } = await readJson(req);
+      const n = Math.min(Math.max(1, Number(limit) || 10), 50);
+      const todo = allLeads().filter((l) => needsEnrichment(l) && (!industry || l.industry === industry))
+        .sort((a, b) => b.score - a.score).slice(0, n);
+      const results = await pool(todo, 4, async (l) => {
+        const { log } = await enrichLead(db, l.id, { fetchImpl });
+        logActivity(l.id, user.id, 'enriched', log.join('\n'));
+        return { id: l.id, name: l.name, log };
+      });
+      return { enriched: results.length, results };
     }],
 
     // Pipeline zone
@@ -137,7 +194,7 @@ export function createApp(db) {
 
     // Analytics zone
     ['GET', /^\/api\/analytics$/, P.ANALYTICS_READ, () => {
-      const leads = allLeads();
+      const leads = allLeads().filter((l) => !l.segments.includes('closed'));
       const countBy = (fn) => leads.reduce((m, l) => { for (const k of [fn(l)].flat()) m[k] = (m[k] ?? 0) + 1; return m; }, {});
       const funnel = STAGES.map((s) => {
         const inStage = leads.filter((l) => l.stage === s);
@@ -145,11 +202,13 @@ export function createApp(db) {
       });
       return {
         total: leads.length,
+        enriched: leads.filter((l) => l.places_checked_at || l.web_checked_at).length,
         avgScore: leads.length ? Math.round(leads.reduce((t, l) => t + l.score, 0) / leads.length) : 0,
         byTier: countBy((l) => l.tier), bySegment: countBy((l) => l.segments),
-        byCity: countBy((l) => l.city ?? 'Unknown'), byIndustry: countBy((l) => PLAYBOOKS[l.industry]?.label ?? 'Other'),
+        byCounty: countBy((l) => l.county ?? 'Unknown'), byIndustry: countBy((l) => PLAYBOOKS[l.industry]?.label ?? 'Other'),
+        gaps: countBy((l) => (l.web_signals?.reachable ? ['booking', 'chat', 'reviews'].filter((g) => !l.web_signals[g].length).map((g) => `No ${g}`) : [])),
         funnel,
-        topOpportunities: leads.filter((l) => !['won', 'lost'].includes(l.stage)).sort((a, b) => b.score - a.score).slice(0, 10)
+        topOpportunities: leads.filter((l) => !['won', 'lost'].includes(l.stage) && l.coverage >= 60).sort((a, b) => b.score - a.score).slice(0, 10)
           .map(({ id, name, city, score, tier, segments }) => ({ id, name, city, score, tier, segments })),
       };
     }],
@@ -178,7 +237,7 @@ export function createApp(db) {
       send(res, 200, result);
     } catch (e) {
       if (!(e instanceof HttpError)) console.error(e);
-      send(res, e.status ?? 500, { error: e instanceof HttpError ? e.message : 'Internal error' });
+      send(res, e.status ?? 502, { error: e instanceof HttpError ? e.message : `Data source error: ${e.message}` });
     }
   };
 }
