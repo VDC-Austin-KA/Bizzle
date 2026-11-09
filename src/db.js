@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS leads (
   source TEXT, external_id TEXT UNIQUE, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE INDEX IF NOT EXISTS leads_addr ON leads(addr_key, zip);
 CREATE INDEX IF NOT EXISTS leads_places ON leads(places_id);
+CREATE TABLE IF NOT EXISTS quotes (
+  id INTEGER PRIMARY KEY, token TEXT UNIQUE NOT NULL, lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('request','proposal')), selection TEXT NOT NULL, one_time INTEGER NOT NULL, monthly INTEGER NOT NULL,
+  contact_name TEXT, business TEXT, email TEXT, phone TEXT, city TEXT, message TEXT,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS usage (day TEXT PRIMARY KEY, google_calls INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS activities (
   id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,

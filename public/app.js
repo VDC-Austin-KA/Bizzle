@@ -25,6 +25,7 @@ const ZONES = [
   ['leads', 'Lead Finder', 'leads:read', renderLeads],
   ['pipeline', 'Pipeline', 'pipeline:write', renderPipeline],
   ['analytics', 'Analytics', 'analytics:read', renderAnalytics],
+  ['quotes', 'Quotes', 'strategy:read', renderQuotes],
   ['admin', 'Admin', 'admin:users', renderAdmin],
   ['account', 'Account', null, renderAccount],
 ];
@@ -40,7 +41,7 @@ async function renderLogin(msg) {
     h('h2', {}, 'Sign in'), h('input', { name: 'email', type: 'email', placeholder: 'Email', required: true, autocomplete: 'username' }),
     h('input', { name: 'password', type: 'password', placeholder: 'Password', required: true, autocomplete: 'current-password' }),
     h('button', {}, 'Sign in'), err);
-  $('#main').replaceChildren(form);
+  $('#main').replaceChildren(form, h('p', { class: 'muted small center' }, 'Business owner? ', h('a', { href: '/quote' }, 'See our pricing and build a quote →')));
   // Alpha mode: one-click demo accounts, one per access portal (same pattern as ShoalCreekClean).
   const cfg = await api('/api/auth/config').catch(() => ({}));
   if (cfg.alpha) form.append(h('div', { class: 'demo' },
@@ -208,7 +209,7 @@ async function openLead(id) {
     h('button', { class: 'close', onclick: () => { d.hidden = true; } }, '×'),
     h('h2', {}, l.name), h('p', {}, segChips(l.segments), ' ', tier(l), ' ', h('span', { class: 'muted' }, `${l.coverage}% of score inputs checked`)),
     facts(l),
-    h('p', {}, refresh, ' ', s && h('a', { class: 'button', href: `#brief/${l.id}` }, 'Client brief & call script'), h('small', { class: 'muted' }, ` Google ${date(l.places_checked_at)} · Website ${date(l.web_checked_at)} · Source: ${l.source}`)), log,
+    h('p', {}, refresh, ' ', s && h('a', { class: 'button', href: `#brief/${l.id}` }, 'Client brief & call script'), ' ', s && h('a', { class: 'button', href: `/quote?lead=${l.id}` }, 'Build a quote'), h('small', { class: 'muted' }, ` Google ${date(l.places_checked_at)} · Website ${date(l.web_checked_at)} · Source: ${l.source}`)), log,
     h('h3', {}, 'Why this score'), ...bars,
     s && h('section', {}, h('h3', {}, `Strategy — ${s.industry}`), h('p', { class: 'pitch' }, s.pitch),
       s.recommended.length > 0
@@ -309,6 +310,22 @@ function renderAccount() {
   $('#main').replaceChildren(h('h1', {}, 'Account'), h('p', { class: 'muted' }, `${me.name} · ${me.email} · ${me.role}`), form);
 }
 
+// ---------- Quotes ----------
+async function renderQuotes() {
+  const quotes = await api('/api/quotes');
+  const share = (t) => `${location.origin}/quote?q=${t}`;
+  $('#main').replaceChildren(h('h1', {}, 'Quotes'),
+    h('p', { class: 'muted' }, 'Requests from the public quote page and proposals saved by reps. ', h('a', { href: '/quote', target: '_blank' }, 'Open the public quote page ↗')),
+    quotes.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Type', 'Business', 'Contact', 'One-time', 'Monthly', 'Links'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, quotes.map((q) => h('tr', {},
+        h('td', {}, q.created_at.slice(0, 10)), h('td', {}, q.kind === 'request' ? h('span', { class: 'chip seg-rising' }, 'Customer request') : `Proposal · ${q.created_by ?? ''}`),
+        h('td', {}, q.business ?? '', q.city ? h('div', { class: 'muted small' }, q.city) : null),
+        h('td', {}, [q.contact_name, q.email, q.phone].filter(Boolean).join(' · '), q.message ? h('div', { class: 'muted small' }, q.message) : null),
+        h('td', {}, money(q.one_time)), h('td', {}, q.monthly ? `${money(q.monthly)}/mo` : '—'),
+        h('td', {}, h('a', { href: share(q.token), target: '_blank' }, 'View quote'), q.lead_id ? [' · ', h('a', { href: '#leads', onclick: () => setTimeout(() => openLead(q.lead_id), 50) }, 'Lead')] : null))))) :
+      h('p', { class: 'muted' }, 'No quotes yet.'));
+}
+
 // ---------- Client brief (printable) ----------
 const copyBtn = (text, label = 'Copy') => {
   const b = h('button', { type: 'button', class: 'ghost no-print', onclick: async () => { await navigator.clipboard.writeText(text); b.textContent = 'Copied'; setTimeout(() => { b.textContent = label; }, 1500); } }, label);
@@ -322,7 +339,8 @@ async function renderBrief(id) {
   $('#main').replaceChildren(h('article', { class: 'brief' },
     h('p', { class: 'no-print' }, h('a', { href: '#leads' }, '← Lead Finder'), ' ',
       h('button', { type: 'button', onclick: () => window.print() }, 'Print / save PDF'), ' ',
-      h('a', { class: 'button', href: `/api/leads/${id}/brief.md`, download: '' }, 'Download (.md)')),
+      h('a', { class: 'button', href: `/api/leads/${id}/brief.md`, download: '' }, 'Download (.md)'), ' ',
+      h('a', { class: 'button', href: `/quote?lead=${id}` }, 'Build a quote')),
     h('h1', {}, `Client brief — ${o.name}`), h('p', {}, segChips(l.segments), ' ', tier(l), h('span', { class: 'muted' }, ` ${l.coverage}% of score inputs checked`)),
     h('h2', {}, 'What we know'), h('table', { class: 'facts' }, o.snapshot.map((f) => h('tr', {}, h('th', {}, f.label), h('td', {}, f.value, h('small', { class: 'muted' }, ` · ${f.source}`))))),
     o.evidence.length > 0 && [h('h2', {}, 'Observed opportunities'), h('ul', {}, o.evidence.map((e) => h('li', {}, e)))],

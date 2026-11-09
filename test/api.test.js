@@ -145,6 +145,29 @@ test('alpha mode: demo accounts per portal, hidden when off', async () => {
   } finally { alphaServer.close(); }
 });
 
+test('public quote request: recomputed server-side, creates lead, shareable link; reps save proposals', async () => {
+  const post = (body) => fetch(`${base}/api/public/quotes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const contact = { name: 'Pat Owner', business: 'Pat\'s Plumbing', email: 'pat@example.com', city: 'Kyle' };
+  assert.equal((await post({ selection: { workflows: [] }, contact })).status, 400);
+  assert.equal((await post({ selection: { workflows: ['booking'] }, contact: { name: 'x', business: 'y' } })).status, 400); // no email/phone
+  const ok = await (await post({ selection: { workflows: ['booking', 'receptionist'], oneTime: 1 }, contact })).json();
+  assert.match(ok.token, /^[0-9a-f]{32}$/);
+  const view = await (await fetch(`${base}/api/public/quotes/${ok.token}`)).json();
+  assert.deepEqual(view.selection.workflows, ['booking', 'receptionist']);
+  assert.equal(view.email, undefined); // contact details are never exposed on the share link
+  const bot = await (await post({ selection: { workflows: ['booking'] }, contact, website_url: 'spam' })).json();
+  assert.equal(bot.token, undefined); // honeypot: accepted silently, nothing saved
+
+  const owner = await login('owner');
+  const list = await (await owner('/api/quotes')).json();
+  assert.equal(list[0].one_time, 1755); // 1950 - 10% — the client's "oneTime: 1" was ignored
+  assert.equal(list[0].business, "Pat's Plumbing");
+  const sales = await login('sales');
+  const prop = await (await sales('/api/quotes', { method: 'POST', body: { lead_id: 1, selection: { training: { pack: 1 } } } })).json();
+  assert.match(prop.token, /^[0-9a-f]{32}$/);
+  assert.equal((await fetch(`${base}/api/quotes`)).status, 401);
+});
+
 test('non-JSON bodies are refused even with a valid session (CSRF guard)', async () => {
   const owner = await login('owner');
   assert.equal((await owner('/api/leads', { method: 'POST', body: 'name=x', type: 'text/plain' })).status, 415);

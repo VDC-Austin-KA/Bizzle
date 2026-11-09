@@ -14,7 +14,7 @@ export function nodeHandler(app) {
   return async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
     if (!url.pathname.startsWith('/api/')) {
-      const rel = normalize(url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
+      const rel = normalize(url.pathname === '/' ? 'index.html' : url.pathname === '/quote' ? 'quote.html' : url.pathname.slice(1));
       try {
         if (rel.startsWith('..')) throw 0;
         const data = await readFile(join(PUBLIC_DIR, rel));

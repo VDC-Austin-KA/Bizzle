@@ -63,6 +63,13 @@ The registry covers all 14 playbook industries in Travis, Williamson and Hays co
 
 **Google billing.** Requesting rating and website fields bills at Google's *Text Search Enterprise* rate. Each lead's enrichment makes one or two Google calls, and bulk enrichment is capped at 50 leads per run.
 
+## Quotes & pricing
+
+- **Public quote builder.** **https://biz.ackerworks.com/quote** needs no login. Customers choose training, done-with-you workflows, locations, a care plan and how to pay, and see a live total with the payment schedule, timeline and separate third-party software estimates beside published market pricing. "Send me this quote" saves the request, creates a lead, and returns a shareable link.
+- **Rep proposals.** **Build a quote** on any lead or client brief opens the same page, pre-filled from that lead's observed gaps and recommended approach. **Save** produces a shareable proposal link for the customer.
+- **Quotes zone.** Lists customer requests and proposals with their contact details.
+- **Pricing.** Prices live in `public/pricing.js`, and the server recomputes every saved quote. See [docs/PRICING.md](docs/PRICING.md) for the competitive research and how each price was set.
+
 ## Without a Google key
 
 Digital Gaps and Customer Demand still fill in where real evidence exists:

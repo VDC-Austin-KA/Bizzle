@@ -10,6 +10,16 @@ import { placesEnabled, searchPlaces } from './sources/places.js';
 import { COUNTIES, fetchOutlets, fetchOutletStats } from './sources/comptroller.js';
 import { enrichLead, needsEnrichment } from './enrich.js';
 import { buildOutreach, briefMarkdown } from './outreach.js';
+import { priceQuote, normalizeSelection } from '../public/pricing.js';
+
+const randomToken = () => [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
+// Public quote requests: per-instance limit of 5 per IP per hour (plus a honeypot field in the form).
+const quoteHits = new Map();
+const quoteLimited = (ip) => {
+  const now = Date.now(); const h = (quoteHits.get(ip) ?? []).filter((t) => now - t < 3_600_000);
+  quoteHits.set(ip, [...h, now]); return h.length >= 5;
+};
+const clean = (v, max) => (v == null ? null : String(v).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max) || null);
 
 const MAX_BODY = 2_000_000;
 const MAX_REGISTRY_IMPORT = 200;
@@ -238,6 +248,44 @@ export function createApp(db, { fetchImpl, secureCookies = false, alpha = false 
           .map(({ id, name, city, score, tier, segments }) => ({ id, name, city, score, tier, segments })),
       };
     }],
+
+    // Quotes — public (customers) and internal (reps). Prices are always recomputed here from public/pricing.js.
+    ['POST', /^\/api\/public\/quotes$/, 'public', async ({ req, ip }) => {
+      const b = await readJson(req);
+      if (b.website_url) return { ok: true }; // honeypot: bots fill hidden fields
+      if (quoteLimited(ip)) fail(429, 'Too many requests — please call us instead');
+      const c = b.contact ?? {};
+      const contact = { name: clean(c.name, 80), business: clean(c.business, 120), email: clean(c.email, 120), phone: clean(c.phone, 40), city: clean(c.city, 60), message: clean(c.message, 1000) };
+      if (!contact.name || !contact.business) fail(400, 'Please add your name and business name');
+      if (contact.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.email)) fail(400, "That email address doesn't look right");
+      if (!contact.email && !contact.phone) fail(400, 'Please add an email or phone number so we can reach you');
+      const q = priceQuote(b.selection);
+      if (!q.selection.workflows.length && !Object.values(q.selection.training).some(Boolean)) fail(400, 'Choose at least one service');
+      const { id: leadId } = await upsertLead(db, { name: contact.business, phone: contact.phone, city: contact.city, source: 'quote_request' });
+      const token = randomToken();
+      await db.run(`INSERT INTO quotes (token, lead_id, kind, selection, one_time, monthly, contact_name, business, email, phone, city, message)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, token, leadId, 'request', JSON.stringify(q.selection), q.oneTime, q.monthly,
+        contact.name, contact.business, contact.email, contact.phone, contact.city, contact.message);
+      await logActivity(leadId, null, 'quote', `Quote requested by ${contact.name}: $${q.oneTime.toLocaleString()} one-time${q.monthly ? ` + $${q.monthly}/mo` : ''}`);
+      return { ok: true, token };
+    }],
+    ['GET', /^\/api\/public\/quotes\/([0-9a-f]{32})$/, 'public', async ({ params: [token] }) => {
+      const r = await db.get('SELECT kind, selection, business, created_at FROM quotes WHERE token = ?', token);
+      if (!r) fail(404, 'Quote not found');
+      return { kind: r.kind, business: r.business, created_at: r.created_at, selection: normalizeSelection(JSON.parse(r.selection)) };
+    }],
+    ['POST', /^\/api\/quotes$/, P.STRATEGY_READ, async ({ req, user }) => {
+      const b = await readJson(req);
+      const lead = await getLead(b.lead_id);
+      const q = priceQuote(b.selection);
+      const token = randomToken();
+      await db.run('INSERT INTO quotes (token, lead_id, kind, selection, one_time, monthly, business, phone, city, created_by) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        token, lead.id, 'proposal', JSON.stringify(q.selection), q.oneTime, q.monthly, lead.google_name ?? lead.name, lead.phone, lead.city, user.id);
+      await logActivity(lead.id, user.id, 'quote', `Proposal saved: $${q.oneTime.toLocaleString()} one-time${q.monthly ? ` + $${q.monthly}/mo` : ''}`);
+      return { token };
+    }],
+    ['GET', /^\/api\/quotes$/, P.STRATEGY_READ, () => db.all(`SELECT q.id, q.token, q.lead_id, q.kind, q.one_time, q.monthly, q.contact_name, q.business, q.email,
+      q.phone, q.city, q.message, q.created_at, u.name AS created_by FROM quotes q LEFT JOIN users u ON u.id = q.created_by ORDER BY q.id DESC LIMIT 200`)],
 
     // Admin zone
     ['GET', /^\/api\/users$/, P.ADMIN_USERS, () => db.all('SELECT id, email, name, role, created_at FROM users ORDER BY id')],
