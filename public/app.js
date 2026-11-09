@@ -26,6 +26,7 @@ const ZONES = [
   ['pipeline', 'Pipeline', 'pipeline:write', renderPipeline],
   ['analytics', 'Analytics', 'analytics:read', renderAnalytics],
   ['admin', 'Admin', 'admin:users', renderAdmin],
+  ['account', 'Account', null, renderAccount],
 ];
 
 function renderLogin(msg) {
@@ -45,7 +46,7 @@ function renderLogin(msg) {
 
 async function boot() {
   try { me = await api('/api/me'); meta = await api('/api/meta'); } catch { return; }
-  const zones = ZONES.filter(([, , perm]) => can(perm));
+  const zones = ZONES.filter(([, , perm]) => !perm || can(perm));
   $('#who').replaceChildren(`${me.name} · ${me.role} `, h('button', { class: 'link', onclick: async () => { await api('/api/logout', { method: 'POST' }); renderLogin(); } }, 'Sign out'));
   const go = (id) => {
     const z = zones.find((x) => x[0] === id) ?? zones[0];
@@ -115,7 +116,7 @@ function renderSourcing(reload) {
     select('industry', meta.industries, null),
     h('select', { name: 'within' }, [['', 'Any age'], ['1', 'Opened ≤ 1 yr'], ['2', '≤ 2 yrs'], ['3', '≤ 3 yrs'], ['5', '≤ 5 yrs']].map(([v, t]) => h('option', { value: v }, t))),
     h('select', { name: 'sort' }, h('option', { value: 'newest' }, 'Newest first'), h('option', { value: 'established' }, 'Longest-established first')),
-    h('select', { name: 'limit' }, [25, 50, 100, 200, 500].map((n) => h('option', { value: n }, `${n} max`))),
+    h('select', { name: 'limit' }, [25, 50, 100, 200].filter((n) => n <= meta.maxRegistryImport).map((n) => h('option', { value: n }, `${n} max`))),
     h('label', {}, h('input', { type: 'checkbox', name: 'sole', value: '1' }), ' Include sole proprietors'),
     h('button', {}, 'Import'));
 
@@ -130,8 +131,15 @@ function renderSourcing(reload) {
 
   const enrich = h('form', { class: 'source' });
   enrich.onsubmit = run(enrich, async (f) => {
-    const r = await api('/api/enrich', { method: 'POST', body: { limit: Number(f.get('limit')), industry: f.get('industry') || undefined } });
-    return r.results.map((x) => `${x.name}\n  ${x.log.join('\n  ')}`).join('\n') || 'Nothing left to enrich.';
+    const queue = await api(`/api/enrich/queue?${new URLSearchParams({ limit: f.get('limit'), industry: f.get('industry') })}`);
+    if (!queue.length) return 'Nothing left to enrich.';
+    const lines = [];
+    for (const [i, q] of queue.entries()) { // one lead per request keeps each call small
+      out.textContent = `Enriching ${i + 1}/${queue.length}: ${q.name}…\n${lines.join('\n')}`;
+      try { const r = await api(`/api/leads/${q.id}/enrich`, { method: 'POST' }); lines.unshift(`${q.name}\n  ${r.log.join('\n  ')}`); }
+      catch (x) { lines.unshift(`${q.name}\n  failed: ${x.message}`); }
+    }
+    return `Enriched ${queue.length} leads\n${lines.join('\n')}`;
   });
   enrich.append(h('strong', {}, 'Enrich'), h('span', { class: 'muted' }, 'Google listing → website scan → registry/alcohol-sales data, for not-yet-enriched leads'),
     select('industry', meta.industries, 'Any industry'), h('select', { name: 'limit' }, [10, 25, 50].map((n) => h('option', { value: n }, `${n} leads`))), h('button', {}, 'Enrich'));
@@ -276,6 +284,22 @@ async function renderAdmin() {
   $('#main').replaceChildren(h('h1', {}, 'Admin — Users & Roles'), form, h('table', {},
     h('thead', {}, h('tr', {}, ['Name', 'Email', 'Role', 'Created'].map((t) => h('th', {}, t)))),
     h('tbody', {}, users.map((u) => h('tr', {}, h('td', {}, u.name), h('td', {}, u.email), h('td', {}, u.role), h('td', {}, u.created_at))))));
+}
+
+// ---------- Account ----------
+function renderAccount() {
+  const out = h('p', { class: 'muted' });
+  const form = h('form', { class: 'card login', onsubmit: async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(form));
+    if (f.next !== f.confirm) { out.textContent = 'New passwords do not match.'; return; }
+    try { await api('/api/me/password', { method: 'POST', body: { current: f.current, next: f.next } }); form.reset(); out.textContent = 'Password changed. Other sessions were signed out.'; }
+    catch (x) { out.textContent = x.message; }
+  } }, h('h2', {}, 'Change password'),
+  h('input', { name: 'current', type: 'password', placeholder: 'Current password', required: true, autocomplete: 'current-password' }),
+  h('input', { name: 'next', type: 'password', placeholder: 'New password (10+ characters)', minlength: 10, required: true, autocomplete: 'new-password' }),
+  h('input', { name: 'confirm', type: 'password', placeholder: 'Repeat new password', required: true, autocomplete: 'new-password' }),
+  h('button', {}, 'Change password'), out);
+  $('#main').replaceChildren(h('h1', {}, 'Account'), h('p', { class: 'muted' }, `${me.name} · ${me.email} · ${me.role}`), form);
 }
 
 boot();

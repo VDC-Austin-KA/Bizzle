@@ -1,7 +1,9 @@
 // Live website scan: fetch the homepage and detect which customer-facing tools the business already uses.
 // The URL is untrusted (from Google or user input), so only public http(s) hosts are fetched (SSRF guard).
-import { lookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
+// node:dns exists in Node; on Cloudflare Workers the platform itself refuses requests to private networks.
+let dnsMod;
+const loadDns = async () => (dnsMod ??= await import('node:dns/promises').catch(() => ({})));
+const isIP = (h) => (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) ? 4 : h.includes(':') ? 6 : 0);
 
 const VENDORS = {
   booking: {
@@ -47,7 +49,9 @@ function isPrivateIp(ip) {
 async function assertPublic(url) {
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Only http(s) URLs are scanned');
   const host = url.hostname.replace(/^\[|\]$/g, '');
-  const addrs = isIP(host) ? [{ address: host }] : await lookup(host, { all: true });
+  if (/^(localhost|.*\.local|.*\.internal)$/i.test(host)) throw new Error('Refusing to scan a private address');
+  const dns = isIP(host) ? null : await loadDns();
+  const addrs = isIP(host) ? [{ address: host }] : dns.lookup ? await dns.lookup(host, { all: true }) : [];
   if (addrs.some((a) => isPrivateIp(a.address))) throw new Error('Refusing to scan a private address');
 }
 

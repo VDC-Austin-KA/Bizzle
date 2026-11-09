@@ -1,9 +1,11 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { openDb, upsertLead } from '../src/db.js';
+import { upsertLead } from '../src/db.js';
+import { openDb } from '../src/db-node.js';
 import { createUser } from '../src/auth.js';
-import { createApp, manualLead } from '../src/server.js';
+import { createApp, manualLead } from '../src/app.js';
+import { nodeHandler } from '../src/server.js';
 
 delete process.env.GOOGLE_PLACES_API_KEY; delete process.env.GOOGLE_MAPS_API_KEY;
 
@@ -23,10 +25,10 @@ const fetchImpl = async (url) => {
 let server, base;
 before(async () => {
   const db = openDb(':memory:');
-  for (const role of ['owner', 'analyst', 'sales']) createUser(db, { email: `${role}@t.test`, name: role, role, password: 'password-123' });
-  createUser(db, { email: 'sales2@t.test', name: 'sales2', role: 'sales', password: 'password-123' });
-  upsertLead(db, { name: 'Lead One', industry: 'dental', city: 'Austin', source: 'manual' });
-  server = createServer(createApp(db, { fetchImpl })).listen(0);
+  for (const role of ['owner', 'analyst', 'sales']) await createUser(db, { email: `${role}@t.test`, name: role, role, password: 'password-123' });
+  await createUser(db, { email: 'sales2@t.test', name: 'sales2', role: 'sales', password: 'password-123' });
+  await upsertLead(db, { name: 'Lead One', industry: 'dental', city: 'Austin', source: 'manual' });
+  server = createServer(nodeHandler(createApp(db, { fetchImpl }))).listen(0);
   base = `http://localhost:${server.address().port}`;
 });
 after(() => server.close());
@@ -113,6 +115,16 @@ test('manual lead validation', () => {
   assert.ok(manualLead({}).error);
   assert.ok(manualLead({ name: 'X', website: 'javascript:alert(1)' }).error);
   assert.equal(manualLead({ name: ' X ', website: 'acme.com' }).lead.website, 'https://acme.com/');
+});
+
+test('enrichment queue + password change', async () => {
+  const owner = await login('owner');
+  const q = await (await owner('/api/enrich/queue?limit=5')).json();
+  assert.ok(Array.isArray(q));
+  assert.equal((await owner('/api/me/password', { method: 'POST', body: { current: 'wrong-password', next: 'new-password-123' } })).status, 400);
+  assert.equal((await owner('/api/me/password', { method: 'POST', body: { current: 'password-123', next: 'short' } })).status, 400);
+  const sales = await login('sales');
+  assert.equal((await sales('/api/enrich/queue')).status, 403);
 });
 
 test('non-JSON bodies are refused even with a valid session (CSRF guard)', async () => {

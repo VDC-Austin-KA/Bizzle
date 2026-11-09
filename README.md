@@ -23,6 +23,24 @@ Then open **Lead Finder → Source new leads**:
 
 Dev logins (created only when `NODE_ENV` ≠ `production`): `owner@bizzle.local` / `change-me-owner`, `analyst@bizzle.local` / `change-me-analyst`, `sales@bizzle.local` / `change-me-sales`. In production, set `BIZZLE_OWNER_EMAIL` and `BIZZLE_OWNER_PASSWORD` before you seed.
 
+## Hosting (Cloudflare Workers + D1)
+
+Production runs at **https://biz.ackerworks.com** as the `bizzle` Worker, with the `bizzle` D1 database. The UI is embedded in the Worker bundle at build time.
+
+```bash
+npm run db:migrate                                   # apply migrations/ to the remote D1 database
+npm run deploy                                       # build UI + deploy Worker (custom domain biz.ackerworks.com)
+npx wrangler secret put GOOGLE_PLACES_API_KEY        # enables Google discovery/matching in production
+BIZZLE_PASSWORD='choose-a-strong-one' npm run create-user -- you@example.com "Your Name" owner
+```
+
+Workers notes:
+
+- Enrichment runs one lead per request, and the UI works through the queue. This keeps each request under the Workers Free limit of 50 outbound calls.
+- Registry imports are capped at 200 per request.
+- Passwords use PBKDF2-SHA256 at 100k iterations, the maximum Workers allows.
+- `npm run dev:worker` runs the Worker locally on `workerd` with a local D1 database.
+
 ## Data sources
 
 | Source | What it provides | Key needed |

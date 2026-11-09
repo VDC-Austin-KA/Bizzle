@@ -4,10 +4,19 @@
   "private": true,
   "description": "Lead intelligence & AI-implementation platform for Central Texas local businesses",
   "type": "module",
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
     "start": "node --no-warnings src/server.js",
     "seed": "node --no-warnings src/seed.js",
-    "test": "node --no-warnings --test"
+    "test": "node --no-warnings --test",
+    "dev:worker": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply bizzle --remote",
+    "create-user": "node scripts/create-user.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.159.0"
   }
 }

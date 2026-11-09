@@ -1,6 +1,3 @@
-import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { addressKey } from './sources/comptroller.js';
 
 export const STAGES = ['new', 'contacted', 'discovery', 'proposal', 'won', 'lost'];
@@ -11,7 +8,7 @@ export const DATA_FIELDS = ['name', 'legal_name', 'org_type', 'industry', 'naics
   'places_id', 'google_name', 'rating', 'review_count', 'business_status', 'maps_url', 'google_category', 'places_checked_at',
   'web_signals', 'web_checked_at', 'mb_revenue_12mo', 'mb_revenue_prev_12mo', 'mb_latest_month', 'mb_checked_at', 'source', 'external_id'];
 
-const SCHEMA = `
+export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('owner','analyst','sales')),
@@ -35,47 +32,49 @@ CREATE TABLE IF NOT EXISTS activities (
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, kind TEXT NOT NULL, body TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 `;
 
-export function openDb(path = process.env.BIZZLE_DB ?? 'data/bizzle.db') {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
-  const db = new DatabaseSync(path);
-  db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
-  db.exec(SCHEMA);
-  return db;
+// Async DB interface shared by Cloudflare D1 (production) and node:sqlite (local dev, see db-node.js):
+//   get(sql, ...params) → row | null,  all(...) → rows,  run(...) → { lastId, changes }
+export function d1Db(d1) {
+  return {
+    get: (sql, ...p) => d1.prepare(sql).bind(...p).first(),
+    all: async (sql, ...p) => (await d1.prepare(sql).bind(...p).all()).results,
+    run: async (sql, ...p) => { const r = await d1.prepare(sql).bind(...p).run(); return { lastId: r.meta.last_row_id, changes: r.meta.changes }; },
+  };
 }
 
 const firstWord = (name) => String(name ?? '').toUpperCase().replace(/^THE\s+/, '').match(/[A-Z0-9]+/)?.[0];
 
 // Insert, or merge into the existing record for the same storefront (same external id, Google place,
 // or same street address + ZIP + first name word). Never overwrites known values with blanks.
-export function upsertLead(db, input) {
+export async function upsertLead(db, input) {
   const lead = Object.fromEntries(Object.entries(input).filter(([k, v]) => DATA_FIELDS.includes(k) && v != null && v !== ''));
   if (typeof lead.hq_local === 'boolean') lead.hq_local = lead.hq_local ? 1 : 0;
   if (lead.web_signals && typeof lead.web_signals !== 'string') lead.web_signals = JSON.stringify(lead.web_signals);
   lead.addr_key = addressKey(lead.address);
 
-  let existing = lead.external_id && db.prepare('SELECT id FROM leads WHERE external_id = ?').get(lead.external_id);
-  existing ||= lead.places_id && db.prepare('SELECT id FROM leads WHERE places_id = ?').get(lead.places_id);
+  let existing = lead.external_id && await db.get('SELECT id FROM leads WHERE external_id = ?', lead.external_id);
+  existing ||= lead.places_id && await db.get('SELECT id FROM leads WHERE places_id = ?', lead.places_id);
   if (!existing && lead.addr_key && lead.zip) {
-    existing = db.prepare('SELECT id, name FROM leads WHERE addr_key = ? AND zip = ?').all(lead.addr_key, lead.zip)
+    existing = (await db.all('SELECT id, name FROM leads WHERE addr_key = ? AND zip = ?', lead.addr_key, lead.zip))
       .find((r) => firstWord(r.name) === firstWord(lead.name));
   }
   if (existing) {
     const { external_id, source, ...rest } = lead; // keep the original record's identity
-    updateLead(db, existing.id, rest);
+    await updateLead(db, existing.id, rest);
     return { id: existing.id, created: false };
   }
   if (!lead.name) throw new Error('name is required');
   const cols = Object.keys(lead);
-  const { lastInsertRowid } = db.prepare(`INSERT INTO leads (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...cols.map((c) => lead[c]));
-  return { id: Number(lastInsertRowid), created: true };
+  const { lastId } = await db.run(`INSERT INTO leads (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`, ...cols.map((c) => lead[c]));
+  return { id: Number(lastId), created: true };
 }
 
 // Column names are restricted to DATA_FIELDS (+ addr_key), so they are safe to interpolate.
-export function updateLead(db, id, fields) {
+export async function updateLead(db, id, fields) {
   const cols = Object.keys(fields).filter((c) => DATA_FIELDS.includes(c) || c === 'addr_key');
   if (!cols.length) return;
   const val = (c) => (c === 'web_signals' && fields[c] && typeof fields[c] !== 'string' ? JSON.stringify(fields[c]) : fields[c]);
-  db.prepare(`UPDATE leads SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...cols.map(val), id);
+  await db.run(`UPDATE leads SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`, ...cols.map(val), id);
 }
 
 export function rowToLead(r) {
