@@ -135,6 +135,13 @@ test('onboard → invite → client sets up, launches and edits → staff never 
   await client('/api/portal/profile', { body: { profile: { ...profile, 'business.tagline': 'Now open Sundays' }, publish: true } });
   assert.ok((await (await fetch(`${base}/s/pats-plumbing`)).text()).includes('Now open Sundays'), 'client edits update the live site');
 
+  // Upgrades: priced server-side, already-owned services excluded, shows up for staff, logged for the client
+  assert.equal((await client('/api/portal/upgrades', { body: { workflows: ['booking'] } })).status, 400); // booking is already owned
+  const up = await (await client('/api/portal/upgrades', { body: { workflows: ['booking', 'reviews', 'receptionist'], oneTime: 1 } })).json();
+  assert.equal(up.oneTime, 1755); // reviews 750 + receptionist 1200, 10% bundle — booking excluded, client price ignored
+  assert.equal((await stranger('/api/portal/upgrades', { body: { workflows: ['reviews'] } })).status, 401);
+  assert.ok((await (await client('/api/portal/state')).json()).audit.some((a) => a.action === 'Requested upgrades'));
+
   // Staff see progress and which keys exist — never values
   const summary = await (await staff(`/api/clients/${created.id}`)).text();
   assert.ok(!summary.includes(SECRET));

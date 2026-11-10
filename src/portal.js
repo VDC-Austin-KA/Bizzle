@@ -3,7 +3,7 @@
 // Everything the client enters lives in the client's own workspace database (see workspace.js).
 import { fail, cookie, readJson } from './http.js';
 import { PERMISSIONS as P } from './rbac.js';
-import { WORKFLOWS } from '../public/pricing.js';
+import { WORKFLOWS, priceQuote } from '../public/pricing.js';
 import { WORKFLOW_DEFS, fieldsFor } from '../public/workflows.js';
 import { renderSite } from '../public/site-template.js';
 import { buildRunbook } from './runbook.js';
@@ -74,6 +74,24 @@ export function portalRoutes({ db, workspaces, secureCookies, origin }) {
       const { w } = await clientAuth(req);
       const { name, data, remove } = await readJson(req);
       return remove ? w.call('removeAsset', name === 'hero' ? 'hero' : 'logo') : w.call('putAsset', name, data);
+    }],
+    // Upgrade request from the builder: priced on the server from public/pricing.js, saved as a quote request
+    // for the Bizzle team (business name + the contact details the client entered for their site), and logged
+    // in the client's own access log.
+    ['POST', /^\/api\/portal\/upgrades$/, 'public', async ({ req }) => {
+      const { id, w } = await clientAuth(req);
+      const { workflows, care } = await readJson(req);
+      const row = await clientRow(id);
+      const owned = JSON.parse(row.workflows);
+      const q = priceQuote({ workflows: (Array.isArray(workflows) ? workflows : []).filter((x) => !owned.includes(x)), care });
+      if (!q.selection.workflows.length) fail(400, 'Choose at least one upgrade');
+      const d = (await w.call('state')).draft ?? {};
+      const token = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
+      await db.run(`INSERT INTO quotes (token, lead_id, kind, selection, one_time, monthly, contact_name, business, email, phone, city, message)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, token, row.lead_id, 'request', JSON.stringify(q.selection), q.oneTime, q.monthly,
+        'Client portal', row.business, d['business.email'] ?? null, d['business.phone'] ?? null, d['business.city'] ?? null, 'Upgrade request from the website builder');
+      await w.call('noteRequest', 'Requested upgrades', q.selection.workflows.map((x) => WORKFLOWS[x].label).join(', '));
+      return { ok: true, token, oneTime: q.oneTime, monthly: q.monthly };
     }],
     ['POST', /^\/api\/portal\/secrets$/, 'public', async ({ req }) => {
       const { w } = await clientAuth(req);

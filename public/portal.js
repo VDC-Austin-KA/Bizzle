@@ -1,7 +1,8 @@
 // Client portal — a guided website builder. The client answers a few friendly questions, picks a design, and
 // watches their site come together in a live preview. Everything is stored in the client's own encrypted
 // workspace; nothing is sent to AI services.
-import { renderSite, TEMPLATES, resolveDesign } from '/site-template.js';
+import { renderSite, TEMPLATES, resolveDesign, CATEGORIES } from '/site-template.js';
+import { WORKFLOWS, SIZES, CARE, priceQuote } from '/pricing.js';
 import { UNIVERSAL_SECURITY } from '/workflows.js';
 
 const $ = (s) => document.querySelector(s);
@@ -29,7 +30,7 @@ const PRIVACY = (compact = false) => h('div', { class: `privacy${compact ? ' com
     'Everything here is kept in your own separate, encrypted workspace — not in our sales systems — and is ',
     h('strong', {}, 'never sent to AI services'), '. You can change, download or delete it at any time.'));
 
-let state = null, draft = {}, view = 'build', step = 0, device = 'desktop';
+let state = null, draft = {}, view = 'build', step = 0, device = 'desktop', designCat = 'All', upgrades = [], upgradeCare = 'none';
 const slugFromPath = () => location.pathname.split('/')[2] ?? '';
 
 // ---------- sign-in ----------
@@ -87,6 +88,7 @@ const STEPS = [
   { id: 'services', short: 'Services', title: 'What you do', sub: 'Your services and why customers choose you.' },
   { id: 'design', short: 'Design', title: 'Pick a design', sub: 'Every option is designed to look great together.' },
   { id: 'photos', short: 'Photos', title: 'Logo & photo', sub: 'Optional, but a real photo makes a big difference.' },
+  { id: 'upgrades', short: 'Upgrades', title: 'Power-ups', sub: 'Tools that work for you 24/7. Turn one on to see it on your site.' },
   { id: 'details', short: 'Details', title: 'Finishing touches', sub: 'About you, hours and common questions.' },
   { id: 'launch', short: 'Launch', title: 'Review & launch', sub: 'Take a look — you can change anything later.' },
 ];
@@ -202,12 +204,17 @@ function stepBody(id) {
     chipList('business.highlights', ['Licensed & insured', 'Family owned', 'Free estimates', 'Upfront pricing', 'Same-day service', 'Satisfaction guaranteed', 'Locally owned', 'Open 7 days'], 4)];
   if (id === 'design') {
     const d = resolveDesign(draft);
-    return [h('div', { class: 'f' }, h('span', {}, 'Design'), h('div', { class: 'templates' }, Object.entries(TEMPLATES).map(([tid, t]) => {
-      const fr = h('iframe', { sandbox: '', tabindex: '-1', 'aria-hidden': 'true', class: 'thumb' });
-      frames.push({ el: fr, design: { 'brand.template': tid } });
-      return h('button', { type: 'button', class: `tpl${d.tid === tid ? ' on' : ''}`, onclick: () => { draft['brand.template'] = tid; draft['brand.palette'] = Object.keys(t.palettes)[0]; draft['brand.fonts'] = Object.keys(t.fonts)[0]; changed(); renderBuilderBody(); } },
-        h('div', { class: 'thumb-wrap' }, fr), h('strong', {}, t.name), h('small', {}, t.tagline));
-    }))),
+    const shown = Object.entries(TEMPLATES).filter(([, t]) => designCat === 'All' || t.category === designCat);
+    return [h('div', { class: 'f' }, h('span', {}, 'Design ', h('em', {}, ` ${Object.keys(TEMPLATES).length} designs · currently ${d.t.name}`)),
+      h('div', { class: 'cats' }, ['All', ...CATEGORIES].map((c) => h('button', { type: 'button', class: designCat === c ? 'on' : '', onclick: () => { designCat = c; renderBuilderBody(); } }, c))),
+      h('div', { class: 'templates' }, shown.map(([tid, t]) => {
+        const fr = h('iframe', { sandbox: '', tabindex: '-1', 'aria-hidden': 'true', class: 'thumb' });
+        const wrap = h('div', { class: 'thumb-wrap' }, fr);
+        const entry = { el: fr, design: { 'brand.template': tid }, visible: false };
+        frames.push(entry); thumbObserver.observe(wrap); wrap._entry = entry;
+        return h('button', { type: 'button', class: `tpl${d.tid === tid ? ' on' : ''}`, onclick: () => { draft['brand.template'] = tid; draft['brand.palette'] = Object.keys(t.palettes)[0]; draft['brand.fonts'] = Object.keys(t.fonts)[0]; changed(); renderBuilderBody(); } },
+          wrap, h('strong', {}, t.name, h('i', {}, t.category)), h('small', {}, t.tagline));
+      }))),
     h('div', { class: 'f' }, h('span', {}, 'Colors'), h('small', {}, 'Hand-picked for this design — every combination is contrast-checked for readability.'),
       h('div', { class: 'palettes' }, Object.entries(d.t.palettes).map(([pid, p]) => h('button', { type: 'button', class: `pal${d.pid === pid ? ' on' : ''}`, onclick: () => { set('brand.palette', pid); renderBuilderBody(); } },
         h('span', { class: 'sw' }, [p.bg, p.primary, p.g2 ?? p.accent].map((c) => { const i = h('i'); i.style.background = c; return i; })), p.name)))),
@@ -217,6 +224,7 @@ function stepBody(id) {
   }
   if (id === 'photos') return [dropZone('logo', 'Your logo', 'PNG with a transparent background looks best. We resize it for you.'),
     dropZone('hero', 'A photo of your work or team', 'Real photos build trust. Landscape works best — we optimize it automatically.')];
+  if (id === 'upgrades') return upgradesStep();
   if (id === 'details') {
     const extras = state.fields.filter((s) => s.section !== 'Your business' && s.section !== 'What you offer' && s.section !== 'Look & feel' && s.section !== 'Links');
     return [input('business.about', { rows: 4 }), faqEditor(), input('business.hours', { rows: 3 }), h('div', { class: 'two' }, input('business.email', { type: 'email' }), input('business.address')),
@@ -277,13 +285,72 @@ function fit() {
 }
 addEventListener('resize', () => fit());
 
+// Thumbnails render only once scrolled into view, so 50 designs stay fast.
+const renderThumb = (fr, assets) => { fr.el.srcdoc = renderSite({ ...draft, ...fr.design, 'brand.palette': undefined, 'brand.fonts': undefined }, assets); fr.done = true; };
+const thumbObserver = new IntersectionObserver((entries) => {
+  for (const e of entries) if (e.isIntersecting && e.target._entry && !e.target._entry.done) {
+    e.target._entry.visible = true; renderThumb(e.target._entry, { logoSrc: state.logo, heroSrc: state.hero, workflows: state.workflows });
+  }
+}, { rootMargin: '200px' });
+
+// ---------- upgrades: priced, explained, and previewed live on the client's own site ----------
+const money = (n) => `$${Math.round(n).toLocaleString()}`;
+const UPGRADE_BLURBS = {
+  booking: 'Customers book themselves, day or night. No more phone tag.',
+  reviews: 'Turn happy customers into 5-star reviews — automatically.',
+  textback: 'Every missed call gets an instant text, so the customer doesn\'t call the next business.',
+  receptionist: 'Calls answered after hours and when you\'re busy; urgent calls still reach you.',
+  chat: 'Answers common questions on your site and captures leads while you work.',
+  followup: 'Quotes and inquiries get a friendly follow-up instead of going cold.',
+  ordering: 'Customers order online for pickup or delivery — straight to your kitchen.',
+  intake: 'New-customer paperwork filled out online before they arrive.',
+};
+function upgradesStep() {
+  const owned = state.workflows;
+  const ids = Object.keys(UPGRADE_BLURBS);
+  const total = h('div', { class: 'up-total' });
+  const out = h('p', { class: 'status' });
+  const drawTotal = () => {
+    const q = priceQuote({ workflows: upgrades, care: upgradeCare });
+    const bundle = q.lines.find((l) => /Bundle/.test(l.label));
+    total.replaceChildren(!upgrades.length ? h('p', { class: 'muted small' }, 'Turn on an upgrade to see it on your site and what it costs.') : h('div', {},
+      h('div', { class: 'row-sum' }, h('span', {}, `${upgrades.length} upgrade${upgrades.length > 1 ? 's' : ''} · one-time setup`), h('b', {}, money(q.oneTime))),
+      bundle ? h('div', { class: 'row-sum save' }, h('span', {}, bundle.label.replace('Bundle savings', 'Bundle savings included')), h('b', {}, `−${money(-bundle.oneTime)}`)) : null,
+      h('label', { class: 'row-sum' }, h('span', {}, 'Ongoing care (optional, cancel anytime)'), h('select', { onchange: (e) => { upgradeCare = e.target.value; drawTotal(); } },
+        Object.entries(CARE).map(([k, c]) => h('option', { value: k, selected: upgradeCare === k }, c.monthly ? `${c.label.replace('Care — ', '')} · ${money(c.monthly)}/mo` : 'No care plan')))),
+      q.monthly ? h('div', { class: 'row-sum' }, h('span', {}, 'Monthly'), h('b', {}, `${money(q.monthly)}/mo`)) : null,
+      h('p', { class: 'muted small' }, 'Software is paid directly to the vendor at their price — we never mark it up. 50% to start, 50% after you approve the result.'),
+      h('button', { type: 'button', class: 'cta wide', onclick: async () => {
+        try { const r = await api('/api/portal/upgrades', { workflows: upgrades, care: upgradeCare }); out.textContent = `Request sent — we'll confirm details with you within one business day. (Quote: ${money(r.oneTime)} one-time${r.monthly ? ` + ${money(r.monthly)}/mo` : ''})`; }
+        catch (x) { out.textContent = x.message; }
+      } }, 'Request these upgrades'), out));
+  };
+  drawTotal();
+  return [h('p', { class: 'muted small' }, 'Every price is flat and published — the same for everyone. Turn one on to try it in your preview.'),
+    ...ids.map((id) => {
+      const w = WORKFLOWS[id]; const has = owned.includes(id); const on = has || upgrades.includes(id);
+      return h('div', { class: `up${on ? ' on' : ''}${has ? ' owned' : ''}` },
+        h('div', { class: 'up-top' }, h('div', {}, h('strong', {}, w.label), h('p', {}, UPGRADE_BLURBS[id])),
+          has ? h('span', { class: 'pill-ok' }, 'Included ✓') : h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: on, onchange: (e) => {
+            upgrades = e.target.checked ? [...upgrades, id] : upgrades.filter((x) => x !== id); renderBuilderBody();
+          } }), h('i'))),
+        h('div', { class: 'up-price' },
+          h('div', {}, h('small', {}, 'Setup, one-time'), h('b', {}, has ? 'Included' : money(SIZES[w.size]))),
+          h('div', {}, h('small', {}, 'Ready in'), h('b', {}, `~${w.weeks} wk${w.weeks > 1 ? 's' : ''}`)),
+          h('div', {}, h('small', {}, 'Software (paid to vendor)'), h('b', { class: 'soft' }, w.software))));
+    }),
+    total];
+}
+
 let previewTimer;
 function refreshPreviews() {
   clearTimeout(previewTimer);
   previewTimer = setTimeout(() => {
     const assets = { logoSrc: state.logo, heroSrc: state.hero, workflows: state.workflows };
-    const main = previewEl?.firstChild; if (main) main.srcdoc = renderSite(draft, assets);
-    for (const fr of frames) fr.el.srcdoc = renderSite({ ...draft, ...fr.design, 'brand.palette': undefined, 'brand.fonts': undefined }, assets);
+    const owned = state.workflows.filter((w) => w !== 'website');
+    const demos = STEPS[step]?.id === 'upgrades' || upgrades.length ? { ids: [...new Set([...owned, ...upgrades])], included: owned } : null;
+    const main = previewEl?.firstChild; if (main) main.srcdoc = renderSite(draft, { ...assets, demos });
+    for (const fr of frames) if (fr.visible) renderThumb(fr, assets);
   }, 120);
 }
 

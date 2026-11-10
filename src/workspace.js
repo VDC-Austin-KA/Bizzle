@@ -216,6 +216,9 @@ export class WorkspaceStore {
     return result;
   }
 
+  // A request the client made from the portal (e.g. upgrades) — recorded in their own access log.
+  noteRequest(action, detail) { this.assertActive(); this.log('You', String(action).slice(0, 80), String(detail ?? '').slice(0, 300)); return { ok: true }; }
+
   // ---------- security check & data ownership ----------
   async runSecurityScan(actor = 'You') {
     const d = this.profileOf('draft') ?? {};
@@ -244,4 +247,4 @@ export class WorkspaceStore {
 
 // Methods callable through the workspace boundary (Durable Object RPC / local adapter). Anything else is refused.
 export const WORKSPACE_METHODS = new Set(['init', 'createInvite', 'acceptInvite', 'login', 'checkSession', 'logout', 'state', 'staffSummary', 'saveProfile',
-  'putAsset', 'removeAsset', 'published', 'asset', 'putSecret', 'deleteSecret', 'verifySecret', 'runSecurityScan', 'exportData', 'destroy']);
+  'putAsset', 'removeAsset', 'noteRequest', 'published', 'asset', 'putSecret', 'deleteSecret', 'verifySecret', 'runSecurityScan', 'exportData', 'destroy']);

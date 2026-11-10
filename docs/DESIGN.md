@@ -1,6 +1,6 @@
 # Client website design system
 
-Clients build their sites in the portal (`/portal`) from four curated templates. All of the code lives in `public/site-template.js`, and the portal renders the live preview with the same code that renders the published site, so the preview always matches.
+Clients build their sites in the portal (`/portal`) from **50 curated designs**: the four hand-built originals plus 46 composable designs (`public/site-compose.js`). All of the code lives in `public/site-template.js`, and the portal renders the live preview with the same code that renders the published site, so the preview always matches.
 
 ## Templates and their references
 
@@ -12,6 +12,45 @@ Each template takes its feel from a well-regarded site: layout, typography and p
 | **Studio** | Stripe | Crisp Inter type with tight tracking, a soft blurred gradient glow, pill buttons with coloured shadows, elevated cards, a gradient call-to-action band. |
 | **Midnight** | Linear's dark mode and the "dark glass" style popular with premium local-service sites | A near-black background with an accent glow, frosted-glass cards, gradient-clipped headline text, a centred hero with a status-pill eyebrow. |
 | **Heritage** | Premium trades and hospitality brands | A top contact bar, Fraunces serif headlines, a trust strip, a framed photo with an offset shadow, and an "Established" seal when there's no photo. |
+
+## The 46 composable designs
+
+Each composable design is a hand-named recipe built from layout modules and design tokens, and a test guarantees no two designs share a recipe.
+
+**Layout modules:**
+
+| Module | Variants |
+|---|---|
+| Navigation | standard, contact bar, centered, minimal, floating pill |
+| Hero | left, centered, split, split-reversed, full-bleed cover, cover with bottom headline, mega type, framed card, gradient glow, magazine |
+| No-photo accent | italic monogram, "Est." seal, stacked services panel, dotted pattern panel |
+| Highlights | marks, chips, dots, badges, trust strip |
+| Services | numbered list, cards, bordered grid, big rows, two-column list, tags, numeral tiles, ruled columns |
+| About | split, pull quote, colour band, side rule, stat cards |
+| FAQ | lines, cards, boxed |
+| Call-to-action band | solid, card, outline, split, minimal |
+| Contact | grid, giant phone number, card, centered |
+| Footer | simple, oversized name |
+
+**Design tokens:** corner style (sharp, soft, round, pill), button shape (square, pill, uppercase), surface treatment (flat, shadow, border, glass), spacing (airy, standard, compact), and heading alignment, weight and case.
+
+**Categories:** Elegant, Modern, Bold, Warm, Dark and Minimal. The builder filters by category and only loads a thumbnail when it scrolls into view.
+
+**Palettes:** a shared library of 30 palettes covering warm lights, cool lights, vivid lights with gradient tones, darks and bold colour-blocks. Each design offers the four that suit its mood, and all are WCAG-tested.
+
+**Fonts:** ten self-hosted open-licence families: Inter, Cormorant, Fraunces, Manrope, Playfair Display, DM Serif Display, Space Grotesk, Instrument Serif, Outfit and Syne.
+
+## Upgrade previews (`public/addon-demos.js`)
+
+The builder's **Upgrades** step lists every service with:
+- its flat setup price;
+- typical time to set it up;
+- the vendor's software cost, shown separately and never marked up;
+- a running total with bundle savings and an optional care plan.
+
+Turning an upgrade on shows an interactive preview of it inside the client's own site, styled to match their chosen design: a booking calendar, missed-call text-back, AI receptionist call, review-request text, follow-up, ordering, intake form, or a floating chat answering one of their own FAQs.
+
+Previews are labelled *Preview*, never invent reviews or statistics, and are **never published**. "Request these upgrades" sends a priced quote request (recomputed on the server) to the Quotes zone and records it in the client's access log.
 
 ## Guard-rails that keep every site high-end
 

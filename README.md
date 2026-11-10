@@ -94,7 +94,7 @@ node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64
 
 ## Client website templates
 
-Clients choose from four curated templates in a six-step builder with a live desktop/phone preview:
+Clients choose from **50 curated designs** (four hand-built, plus 46 composed from layout modules) in a seven-step builder, which includes an **Upgrades** step with live previews and pricing. They pick with a live desktop/phone preview:
 
 | Template | Inspired by |
 |---|---|

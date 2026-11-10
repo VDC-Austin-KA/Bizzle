@@ -4,3 +4,9 @@ Fonts in this folder are licensed under the SIL Open Font License, Version 1.1 (
 - Fraunces — Copyright The Fraunces Project Authors (https://github.com/undercasetype/Fraunces)
 - Manrope — Copyright The Manrope Project Authors (https://github.com/sharanda/manrope)
 Latin subsets, variable weights, downloaded from Google Fonts and self-hosted (no third-party requests).
+- Playfair Display — Copyright The Playfair Project Authors (https://github.com/clauseggers/Playfair)
+- DM Serif Display — Copyright The DM Serif Project Authors (https://github.com/googlefonts/dm-fonts)
+- Space Grotesk — Copyright The Space Grotesk Project Authors (https://github.com/floriankarsten/space-grotesk)
+- Instrument Serif — Copyright The Instrument Serif Project Authors (https://github.com/Instrument/instrument-serif)
+- Outfit — Copyright The Outfit Project Authors (https://github.com/Outfitio/Outfit-Fonts)
+- Syne — Copyright The Syne Project Authors (https://gitlab.com/bonjour-monde/fonderie/syne-typeface)

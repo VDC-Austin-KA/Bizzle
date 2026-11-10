@@ -8,19 +8,16 @@
 //   Midnight — Linear dark mode + premium local-service "dark glass" look: deep ground, frosted cards, one glowing accent
 //   Heritage — premium trades & hospitality: warm serif/sans pairing, trust strip, photo-forward
 
-const FONT_FACES = {
-  inter: "@font-face{font-family:'Inter';src:url(/fonts/inter.woff2) format('woff2');font-weight:300 700;font-display:swap}",
-  cormorant: "@font-face{font-family:'Cormorant Garamond';src:url(/fonts/cormorant.woff2) format('woff2');font-weight:400 700;font-display:swap}@font-face{font-family:'Cormorant Garamond';font-style:italic;src:url(/fonts/cormorant-italic.woff2) format('woff2');font-weight:400 700;font-display:swap}",
-  fraunces: "@font-face{font-family:'Fraunces';src:url(/fonts/fraunces.woff2) format('woff2');font-weight:300 700;font-display:swap}",
-  manrope: "@font-face{font-family:'Manrope';src:url(/fonts/manrope.woff2) format('woff2');font-weight:300 800;font-display:swap}",
-};
-const STACK = { inter: "'Inter',system-ui,sans-serif", cormorant: "'Cormorant Garamond',Georgia,serif", fraunces: "'Fraunces',Georgia,serif", manrope: "'Manrope','Inter',system-ui,sans-serif" };
+import { esc, safeUrl, digits, lines, pad, BASE_CSS } from './site-core.js';
+import { COMPOSED, renderComposed } from './site-compose.js';
+import { demoSection } from './addon-demos.js';
+export const CATEGORIES = ['Elegant', 'Modern', 'Bold', 'Warm', 'Dark', 'Minimal'];
 
 const P = (name, bg, surface, ink, muted, line, primary, onPrimary, accent, extra = {}) => ({ name, bg, surface, ink, muted, line, primary, onPrimary, accent, ...extra });
 
-export const TEMPLATES = {
+const LEGACY = {
   atelier: {
-    name: 'Atelier', tagline: 'Quiet luxury. Editorial serif type on warm paper.',
+    category: 'Elegant', name: 'Atelier', tagline: 'Quiet luxury. Editorial serif type on warm paper.',
     fonts: { classic: { name: 'Cormorant & Inter', display: 'cormorant', body: 'inter' }, modern: { name: 'Fraunces & Inter', display: 'fraunces', body: 'inter' } },
     palettes: {
       ivory: P('Ivory & Charcoal', '#f6f1e9', '#efe8dc', '#1d1b18', '#5c554b', '#d9cfc0', '#1d1b18', '#f6f1e9', '#8a6a3f'),
@@ -30,7 +27,7 @@ export const TEMPLATES = {
     },
   },
   studio: {
-    name: 'Studio', tagline: 'Modern and confident. Crisp type and a soft gradient glow.',
+    category: 'Modern', name: 'Studio', tagline: 'Modern and confident. Crisp type and a soft gradient glow.',
     fonts: { crisp: { name: 'Inter', display: 'inter', body: 'inter' }, geometric: { name: 'Manrope', display: 'manrope', body: 'inter' } },
     palettes: {
       indigo: P('Indigo', '#ffffff', '#f6f8fc', '#0a2540', '#425466', '#e3e8ef', '#5046e5', '#ffffff', '#5046e5', { g1: '#7f7cff', g2: '#c4b5fd', g3: '#7dd3fc' }),
@@ -40,7 +37,7 @@ export const TEMPLATES = {
     },
   },
   midnight: {
-    name: 'Midnight', tagline: 'Dark, sleek and premium. Frosted glass with one glowing accent.',
+    category: 'Dark', name: 'Midnight', tagline: 'Dark, sleek and premium. Frosted glass with one glowing accent.',
     fonts: { geometric: { name: 'Manrope', display: 'manrope', body: 'inter' }, crisp: { name: 'Inter', display: 'inter', body: 'inter' } },
     palettes: {
       amber: P('Graphite & Amber', '#0b0d10', '#14171c', '#f3f4f6', '#a3a9b5', '#262a31', '#f5a524', '#141007', '#f5a524'),
@@ -50,7 +47,7 @@ export const TEMPLATES = {
     },
   },
   heritage: {
-    name: 'Heritage', tagline: 'Trusted and established. Warm serif type with a craftsman feel.',
+    category: 'Warm', name: 'Heritage', tagline: 'Trusted and established. Warm serif type with a craftsman feel.',
     fonts: { classic: { name: 'Fraunces & Inter', display: 'fraunces', body: 'inter' }, refined: { name: 'Cormorant & Manrope', display: 'cormorant', body: 'manrope' } },
     palettes: {
       forest: P('Forest & Brass', '#f8f4ec', '#efe8da', '#1f2a24', '#535d57', '#ddd3c1', '#1f3d2f', '#f8f4ec', '#9c773b'),
@@ -60,15 +57,11 @@ export const TEMPLATES = {
     },
   },
 };
+// The four original hand-built designs + the composable designs (site-compose.js).
+export const TEMPLATES = { ...LEGACY, ...COMPOSED };
 export const DEFAULTS = { template: 'atelier', palette: 'ivory', fonts: 'classic' };
 export const ALL_PALETTES = [...new Set(Object.values(TEMPLATES).flatMap((t) => Object.keys(t.palettes)))];
 export const ALL_FONTS = [...new Set(Object.values(TEMPLATES).flatMap((t) => Object.keys(t.fonts)))];
-
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const safeUrl = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : null; } catch { return null; } };
-const digits = (p) => String(p ?? '').replace(/[^0-9+]/g, '');
-const lines = (t) => String(t ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
-const pad = (n) => String(n + 1).padStart(2, '0');
 
 // Resolve the client's choices to a valid template/palette/fonts combination (unknown values fall back to defaults).
 export function resolveDesign(p) {
@@ -78,45 +71,6 @@ export function resolveDesign(p) {
   const fid = t.fonts[p['brand.fonts']] ? p['brand.fonts'] : Object.keys(t.fonts)[0];
   return { tid, t, pid, pal: t.palettes[pid], fid, fonts: t.fonts[fid] };
 }
-
-const BASE_CSS = (pal, f) => `
-${FONT_FACES[f.display]}${f.body !== f.display ? FONT_FACES[f.body] : ''}
-:root{--bg:${pal.bg};--surface:${pal.surface};--ink:${pal.ink};--muted:${pal.muted};--line:${pal.line};--primary:${pal.primary};--on-primary:${pal.onPrimary};--accent:${pal.accent};
---display:${STACK[f.display]};--body:${STACK[f.body]};--max:1160px}
-*{box-sizing:border-box}html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased}
-a{color:inherit}img{max-width:100%;display:block}
-.wrap{max-width:var(--max);margin:0 auto;padding:0 clamp(20px,5vw,48px)}
-.nav{position:sticky;top:0;z-index:5;backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px)}
-.nav .wrap{display:flex;align-items:center;gap:28px;height:72px}
-.brand{display:flex;align-items:center;gap:12px;text-decoration:none;font-family:var(--display);font-size:21px;font-weight:600;letter-spacing:-.01em}
-.brand img{height:38px;width:auto;max-width:140px;object-fit:contain}
-.links{display:flex;gap:26px;margin-left:auto;font-size:14.5px}.links a{text-decoration:none;opacity:.78;transition:opacity .2s}.links a:hover{opacity:1}
-.btn{display:inline-flex;align-items:center;gap:8px;padding:14px 26px;font-weight:600;font-size:15.5px;text-decoration:none;transition:transform .2s,box-shadow .2s,background .2s;white-space:nowrap}
-.btn:hover{transform:translateY(-1px)}.btn.solid{background:var(--primary);color:var(--on-primary)}
-.btn.line{border:1px solid currentColor}.btn.small{padding:10px 18px;font-size:14px}
-h1,h2,h3{font-family:var(--display);font-weight:500;letter-spacing:-.02em;line-height:1.08;margin:0}
-h1{font-size:clamp(42px,6.4vw,84px)}h2{font-size:clamp(32px,4vw,52px)}h3{font-size:22px;letter-spacing:-.01em}
-.eyebrow{font-size:12.5px;letter-spacing:.18em;text-transform:uppercase;font-weight:600;color:var(--muted)}
-.lead{font-size:clamp(18px,1.6vw,21px);color:var(--muted);max-width:620px}
-section{padding:clamp(72px,10vw,128px) 0}
-.sec-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:48px;flex-wrap:wrap}
-.faq details{border-top:1px solid var(--line);padding:22px 0}.faq details:last-child{border-bottom:1px solid var(--line)}
-.band .cta-row{justify-content:center}
-.faq summary{cursor:pointer;list-style:none;display:flex;justify-content:space-between;gap:20px;font-size:19px;font-weight:500}
-.faq summary::-webkit-details-marker{display:none}.faq summary::after{content:'+';font-size:24px;line-height:1;transition:transform .25s;color:var(--muted)}
-.faq details[open] summary::after{transform:rotate(45deg)}.faq p{color:var(--muted);margin:12px 0 0;max-width:720px}
-.contact-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:40px}
-.contact-grid h3{font-family:var(--body);font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:12px}
-.contact-grid p,.contact-grid pre{margin:0;font:inherit;white-space:pre-wrap}
-footer{padding:36px 0;font-size:14px;color:var(--muted);border-top:1px solid var(--line)}
-footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}footer a{margin-left:18px}
-@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
-.hero .rise{animation:rise .9s cubic-bezier(.2,.7,.2,1) both}.hero .rise:nth-child(2){animation-delay:.08s}.hero .rise:nth-child(3){animation-delay:.16s}.hero .rise:nth-child(4){animation-delay:.24s}
-:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
-@media (max-width:760px){.links{display:none}.nav .btn{margin-left:auto}body{font-size:16px}}
-`;
 
 const TEMPLATE_CSS = {
   atelier: `
@@ -188,7 +142,7 @@ h2{font-weight:700;letter-spacing:-.035em}
 .nav{background:color-mix(in srgb,var(--bg) 88%,transparent);border-bottom:1px solid var(--line)}
 .btn{border-radius:6px}.btn.line{border-color:var(--ink)}
 .hero{padding:clamp(64px,9vw,120px) 0}.hero .wrap{display:grid;grid-template-columns:1.1fr .9fr;gap:clamp(32px,5vw,72px);align-items:center}
-.hero.no-media .wrap{grid-template-columns:1.2fr .8fr}@media (max-width:860px){.seal{display:none}}.hero h1{font-weight:500;max-width:14ch}
+.hero.no-media .wrap{grid-template-columns:1.2fr .8fr}.hero h1{font-weight:500;max-width:14ch}
 .hero .lead{margin:24px 0 36px}.cta-row{display:flex;gap:12px;flex-wrap:wrap}
 .hero-media{aspect-ratio:4/5;border-radius:8px;overflow:hidden;box-shadow:24px 24px 0 -1px var(--surface),24px 24px 0 0 var(--line)}.hero-media img{width:100%;height:100%;object-fit:cover}
 .seal{justify-self:center;width:clamp(220px,24vw,300px);aspect-ratio:1;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center;text-align:center;position:relative;background:var(--surface)}
@@ -202,12 +156,19 @@ h2{font-weight:700;letter-spacing:-.035em}
 .about{background:var(--primary);color:var(--on-primary)}.about .eyebrow{color:color-mix(in srgb,var(--on-primary) 70%,transparent)}
 .about .wrap{display:grid;grid-template-columns:1fr 1.3fr;gap:clamp(32px,6vw,80px)}.about p{font-family:var(--display);font-size:clamp(22px,2.4vw,30px);line-height:1.4;margin:0}
 .band{text-align:center}.band h2{margin-bottom:28px}
-@media (max-width:860px){.hero .wrap,.about .wrap{grid-template-columns:1fr}.hero-media{aspect-ratio:16/10;box-shadow:10px 10px 0 -1px var(--surface),10px 10px 0 0 var(--line)}}`,
+@media (max-width:860px){.seal{display:none}.hero .wrap,.about .wrap{grid-template-columns:1fr}.hero-media{aspect-ratio:16/10;box-shadow:10px 10px 0 -1px var(--surface),10px 10px 0 0 var(--line)}}`,
 };
 
 // p = profile; assets = { logo, hero } as URLs (data: in preview, /s/<slug>/… when published).
-export function renderSite(p, { logoSrc = null, heroSrc = null, workflows = [] } = {}) {
-  const { tid, pal, fonts } = resolveDesign(p);
+// demos: { ids, included } — PREVIEW ONLY (portal builder). The published site never passes demos.
+export function renderSite(p, { logoSrc = null, heroSrc = null, workflows = [], demos = null } = {}) {
+  if (demos?.ids?.length) {
+    const html = renderSite(p, { logoSrc, heroSrc, workflows });
+    const d = demoSection(p, demos.ids, demos.included ?? []);
+    return d.html ? html.replace('</style>', `${d.css}</style>`).replace(/<footer/, `${d.html}<footer`) : html;
+  }
+  const { tid, t, pal, fonts } = resolveDesign(p);
+  if (t.kind === 'composed') return renderComposed(t, pal, fonts, p, { logoSrc, heroSrc, workflows });
   const name = p['business.name'] || 'Your business';
   const city = p['business.city'];
   const phone = digits(p['business.phone']);

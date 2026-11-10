@@ -42,3 +42,13 @@ test('design fields only accept curated values', () => {
   assert.equal(validateProfile({ 'business.since': '1850' }, []).errors.length, 1);
   assert.equal(validateProfile({ 'business.since': '2011' }, []).errors.length, 0);
 });
+
+test('50 designs, each with a unique layout recipe and name', async () => {
+  const { COMPOSED } = await import('../public/site-compose.js');
+  assert.equal(Object.keys(TEMPLATES).length, 50);
+  const sigs = Object.values(COMPOSED).map((t) => JSON.stringify([t.layout, t.tokens]));
+  assert.equal(new Set(sigs).size, sigs.length, 'two designs share the same recipe');
+  const names = Object.values(TEMPLATES).map((t) => t.name);
+  assert.equal(new Set(names).size, names.length);
+  for (const t of Object.values(TEMPLATES)) assert.equal(Object.keys(t.palettes).length, 4, `${t.name} needs 4 palettes`);
+});
