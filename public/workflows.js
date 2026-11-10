@@ -4,32 +4,38 @@
 //  • runbooks for operators / AI agents (steps, security checklist, verification, rollback)
 // Secrets are only ever referenced by NAME here. Values live encrypted in the client's own workspace.
 
-// Fields every client fills in (business basics, branding, public links).
+// Fields every client fills in (business basics, content, design, public links).
+import { TEMPLATES, ALL_PALETTES, ALL_FONTS, DEFAULTS } from './site-template.js';
+const opts = (ids, names) => Object.fromEntries(ids.map((id) => [id, names?.[id] ?? id]));
 export const PROFILE_FIELDS = [
   { section: 'Your business', fields: [
     { key: 'business.name', label: 'Business name', type: 'text', required: true, max: 80 },
-    { key: 'business.tagline', label: 'One-line description', type: 'text', max: 120, placeholder: 'e.g. Family-owned plumbing in Round Rock since 2009' },
-    { key: 'business.phone', label: 'Phone customers should call', type: 'tel', required: true, max: 30 },
-    { key: 'business.email', label: 'Email customers should use', type: 'email', max: 120 },
-    { key: 'business.address', label: 'Address (leave blank if you go to customers)', type: 'text', max: 160 },
+    { key: 'business.tagline', label: 'Your headline', type: 'text', max: 90, placeholder: 'Plumbing done right, the first time.', help: 'The big line visitors see first. Short and confident works best.' },
+    { key: 'business.phone', label: 'Phone number', type: 'tel', required: true, max: 30 },
     { key: 'business.city', label: 'City', type: 'text', required: true, max: 60 },
-    { key: 'business.hours', label: 'Hours', type: 'textarea', max: 400, placeholder: 'Mon–Fri 8am–6pm\nSat 9am–1pm' },
-    { key: 'business.services', label: 'Services (one per line)', type: 'textarea', required: true, max: 1200 },
-    { key: 'business.about', label: 'About you (a few sentences)', type: 'textarea', max: 1200 },
+    { key: 'business.since', label: 'Year founded', type: 'year', max: 4, placeholder: '2011' },
+    { key: 'business.email', label: 'Email for customers', type: 'email', max: 120 },
+    { key: 'business.address', label: 'Street address', type: 'text', max: 160, help: 'Leave blank if you go to your customers.' },
+    { key: 'business.hours', label: 'Hours', type: 'textarea', max: 400, placeholder: 'Mon–Fri  7am–6pm\nSat  8am–noon' },
+  ] },
+  { section: 'What you offer', fields: [
+    { key: 'business.services', label: 'Services', type: 'list', required: true, max: 1200, placeholder: 'e.g. Water heaters' },
+    { key: 'business.highlights', label: 'Why customers choose you', type: 'list', max: 300, placeholder: 'e.g. Licensed & insured', help: 'Up to 4 short points.' },
+    { key: 'business.about', label: 'About you', type: 'textarea', max: 900, placeholder: 'A few sentences about who you are and how you work.' },
+    { key: 'content.faq', label: 'Common questions', type: 'faq', max: 2400 },
   ] },
   { section: 'Look & feel', fields: [
-    { key: 'brand.primary', label: 'Main color', type: 'color', default: '#1f4e79' },
-    { key: 'brand.accent', label: 'Button color', type: 'color', default: '#e07a1f' },
-    { key: 'brand.theme', label: 'Style', type: 'select', options: { clean: 'Clean & light', bold: 'Bold & dark header', warm: 'Warm & friendly' }, default: 'clean' },
-    { key: 'brand.font', label: 'Font', type: 'select', options: { modern: 'Modern', classic: 'Classic', friendly: 'Friendly' }, default: 'modern' },
+    { key: 'brand.template', label: 'Design', type: 'select', options: opts(Object.keys(TEMPLATES), Object.fromEntries(Object.entries(TEMPLATES).map(([k, t]) => [k, t.name]))), default: DEFAULTS.template },
+    { key: 'brand.palette', label: 'Color palette', type: 'select', options: opts(ALL_PALETTES), default: DEFAULTS.palette },
+    { key: 'brand.fonts', label: 'Typography', type: 'select', options: opts(ALL_FONTS), default: DEFAULTS.fonts },
   ] },
-  { section: 'Links (optional)', fields: [
-    { key: 'links.booking', label: 'Online booking link', type: 'url', max: 300, help: 'Paste the public link to your booking page (Square, Calendly, etc.).' },
-    { key: 'links.review', label: 'Google review link', type: 'url', max: 300, help: 'From your Google Business Profile → "Ask for reviews".' },
+  { section: 'Links', fields: [
+    { key: 'links.booking', label: 'Online booking link', type: 'url', max: 300, help: 'Your public booking page (Square, Calendly…). Adds a "Book online" button.' },
+    { key: 'links.review', label: 'Google review link', type: 'url', max: 300, help: 'Google Business Profile → "Ask for reviews".' },
     { key: 'links.ordering', label: 'Online ordering link', type: 'url', max: 300 },
-    { key: 'links.facebook', label: 'Facebook page', type: 'url', max: 300 },
+    { key: 'links.facebook', label: 'Facebook', type: 'url', max: 300 },
     { key: 'links.instagram', label: 'Instagram', type: 'url', max: 300 },
-    { key: 'links.website', label: 'Your current website (for the security check)', type: 'url', max: 300 },
+    { key: 'links.website', label: 'Your current website', type: 'url', max: 300, help: 'Optional — used for your free security check.' },
   ] },
 ];
 
@@ -94,8 +100,7 @@ export const WORKFLOW_DEFS = {
     rollback: 'Switch off forwarding — calls ring as before.',
   },
   chat: {
-    fields: [{ key: 'wf.chat.faq', label: 'Common questions & answers (one per line: question | answer)', type: 'textarea', max: 2000, placeholder: 'Do you offer free estimates? | Yes, within 20 miles of Round Rock.' },
-      { key: 'wf.chat.leadEmail', label: 'Where should new leads be sent?', type: 'email', max: 120 }],
+    fields: [{ key: 'wf.chat.leadEmail', label: 'Where should new chat leads be sent?', type: 'email', max: 120, help: 'Chat answers come from your Common questions.' }],
     access: [{ kind: 'self', name: 'Website access', detail: 'If you keep your current site, invite us as an editor or we send you a snippet to paste.' }],
     security: ['No passwords, card numbers or health details collected in chat', 'A person can always take over', 'Lead notifications go only to your chosen inbox'],
     steps: [{ auto: true, title: 'Publish your Q&A on your site' }, { auto: false, title: 'Install the chat tool with your answers' }, { auto: false, title: 'Test lead capture with you' }],
@@ -160,6 +165,8 @@ export function validateProfile(input, workflows) {
       if (f.type === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { errors.push(`${f.label}: that email doesn't look right`); continue; }
       if (f.type === 'tel' && !/^[0-9+().\-\s]{7,30}$/.test(v)) { errors.push(`${f.label}: that phone number doesn't look right`); continue; }
       if (f.type === 'select' && !(v in f.options)) { errors.push(`${f.label}: choose one of the options`); continue; }
+      if (f.type === 'year' && !(/^(19|20)\d{2}$/.test(v) && Number(v) <= new Date().getFullYear())) { errors.push(`${f.label}: use a 4-digit year`); continue; }
+      if (f.type === 'list' || f.type === 'faq') v = v.split('\n').map((l) => l.trim()).filter(Boolean).join('\n');
       out[f.key] = v;
     }
   }

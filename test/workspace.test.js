@@ -56,11 +56,11 @@ test('logo uploads are checked by content', () => {
 });
 
 test('published site escapes client input and contains no scripts', () => {
-  const html = renderSite({ 'business.name': '<script>alert(1)</script>', 'business.tagline': '"><img src=x onerror=alert(1)>', 'brand.primary': 'red;}</style><script>', 'links.booking': 'javascript:alert(1)' });
+  const html = renderSite({ 'business.name': '<script>alert(1)</script>', 'business.tagline': '"><img src=x onerror=alert(1)>', 'brand.palette': 'red;}</style><script>', 'links.booking': 'javascript:alert(1)' });
   assert.ok(!/<script/i.test(html));
-  assert.ok(!/onerror=/i.test(html.replace(/&quot;|&lt;|&gt;/g, '')) || html.includes('&lt;img'));
+  assert.ok(html.includes('&lt;img'));
   assert.ok(!html.includes('javascript:'));
-  assert.ok(html.includes('#1f4e79')); // invalid color fell back to the default
+  assert.ok(html.includes('#f6f1e9')); // invalid palette fell back to the default (Atelier / Ivory)
 });
 
 test('runbooks contain placeholders only — never client values', () => {
@@ -117,11 +117,11 @@ test('onboard → invite → client sets up, launches and edits → staff never 
   let state = await (await client('/api/portal/state')).json();
   assert.deepEqual(state.workflows, ['booking', 'website']);
   const profile = { 'business.name': "Pat's Plumbing", 'business.phone': '512-555-0100', 'business.city': 'Kyle', 'business.services': 'Repairs\nWater heaters',
-    'brand.primary': '#123456', 'links.booking': 'https://book.example.com/pat', 'links.website': 'https://pats.example.com' };
+    'brand.template': 'midnight', 'brand.palette': 'gold', 'links.booking': 'https://book.example.com/pat', 'links.website': 'https://pats.example.com' };
   const bad = await client('/api/portal/profile', { body: { profile: { ...profile, 'links.booking': 'javascript:alert(1)' }, publish: true } });
   assert.equal(bad.status, 400);
-  assert.equal((await client('/api/portal/logo', { body: { data: btoa('<svg/>') } })).status, 400);
-  assert.equal((await client('/api/portal/logo', { body: { data: pngB64 } })).status, 200);
+  assert.equal((await client('/api/portal/asset', { body: { name: 'logo', data: btoa('<svg/>') } })).status, 400);
+  assert.equal((await client('/api/portal/asset', { body: { name: 'logo', data: pngB64 } })).status, 200);
   assert.equal((await client('/api/portal/secrets', { body: { name: 'SQUARE_ACCESS_TOKEN', value: SECRET } })).status, 200);
   const launched = await (await client('/api/portal/profile', { body: { profile, publish: true } })).json();
   assert.equal(launched.first, true);
@@ -130,7 +130,7 @@ test('onboard → invite → client sets up, launches and edits → staff never 
   assert.equal(site.status, 200);
   assert.match(site.headers.get('content-security-policy'), /default-src 'none'/);
   const html = await site.text();
-  assert.ok(html.includes('Pat&#39;s Plumbing') && html.includes('#123456') && html.includes('/s/pats-plumbing/logo'));
+  assert.ok(html.includes('Pat&#39;s Plumbing') && html.includes('#d4b26a') && html.includes('/s/pats-plumbing/logo'));
   assert.equal((await fetch(`${base}/s/pats-plumbing/logo`)).headers.get('content-type'), 'image/png');
   await client('/api/portal/profile', { body: { profile: { ...profile, 'business.tagline': 'Now open Sundays' }, publish: true } });
   assert.ok((await (await fetch(`${base}/s/pats-plumbing`)).text()).includes('Now open Sundays'), 'client edits update the live site');

@@ -15,6 +15,7 @@ const STATIC_HEADERS = {
 const PORTAL_CSP = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 let app;
+const fontCache = {};
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -27,6 +28,11 @@ export default {
     const portal = url.pathname === '/portal' || url.pathname.startsWith('/portal/');
     const file = ASSETS[portal ? '/portal.html' : url.pathname];
     if (!file || !['GET', 'HEAD'].includes(request.method)) return new Response('Not found', { status: 404 });
+    if (file.binary) { // self-hosted fonts: long-lived cache; CORS so the sandboxed preview can load them
+      fontCache[url.pathname] ??= Uint8Array.from(atob(file.body), (c) => c.charCodeAt(0));
+      return new Response(request.method === 'HEAD' ? null : fontCache[url.pathname], { headers: { 'Content-Type': file.type,
+        'Cache-Control': 'public, max-age=31536000, immutable', 'Access-Control-Allow-Origin': '*', 'X-Content-Type-Options': 'nosniff' } });
+    }
     return new Response(request.method === 'HEAD' ? null : file.body,
       { headers: { 'Content-Type': file.type, ...STATIC_HEADERS, ...(portal ? { 'Content-Security-Policy': PORTAL_CSP } : {}) } });
   },

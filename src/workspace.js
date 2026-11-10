@@ -23,7 +23,8 @@ const SCHEMA = [
   'CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT)',
   'CREATE TABLE IF NOT EXISTS reports (kind TEXT PRIMARY KEY, data TEXT NOT NULL, at TEXT NOT NULL)',
 ];
-const INVITE_TTL = 14 * 864e5, SESSION_TTL = 12 * 3600e3, LOGO_MAX = 300_000;
+const INVITE_TTL = 14 * 864e5, SESSION_TTL = 12 * 3600e3;
+const ASSET_LIMITS = { logo: 300_000, hero: 900_000 };
 const nowIso = () => new Date().toISOString();
 const b64 = {
   enc: (buf) => { const u8 = new Uint8Array(buf); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); },
@@ -115,11 +116,11 @@ export class WorkspaceStore {
   // ---------- what the client sees ----------
   state() {
     const m = this.meta();
-    const logo = this.exec('SELECT mime, data_b64 FROM assets WHERE name = ?', 'logo')[0];
+    const asset = (n) => { const r = this.exec('SELECT mime, data_b64 FROM assets WHERE name = ?', n)[0]; return r ? `data:${r.mime};base64,${r.data_b64}` : null; };
     return {
       business: m.business, slug: m.slug, status: m.status, workflows: this.workflows(), publishedAt: m.published_at ?? null,
       draft: this.profileOf('draft') ?? {}, live: !!this.profileOf('published'),
-      logo: logo ? `data:${logo.mime};base64,${logo.data_b64}` : null,
+      logo: asset('logo'), hero: asset('hero'),
       secrets: this.secretsList(), report: this.report(), audit: this.exec('SELECT at, actor, action, detail FROM audit ORDER BY id DESC LIMIT 100'),
       missing: missingRequired(this.profileOf('draft'), this.workflows()),
     };
@@ -127,7 +128,7 @@ export class WorkspaceStore {
   // What Bizzle staff can see: progress, non-secret settings, which keys exist (never their values), the security report.
   staffSummary() {
     const s = this.state();
-    return { status: s.status, workflows: s.workflows, live: s.live, publishedAt: s.publishedAt, draft: s.draft, hasLogo: !!s.logo,
+    return { status: s.status, workflows: s.workflows, live: s.live, publishedAt: s.publishedAt, draft: s.draft, hasLogo: !!s.logo, hasPhoto: !!s.hero,
       missing: s.missing, secrets: s.secrets, report: s.report, audit: s.audit.slice(0, 30) };
   }
   report() { const r = this.exec('SELECT data, at FROM reports WHERE kind = ?', 'security')[0]; return r ? { ...JSON.parse(r.data), at: r.at } : null; }
@@ -146,24 +147,28 @@ export class WorkspaceStore {
     this.log(actor, first ? 'Launched your site' : 'Published changes to your site');
     return { ok: true, published: true, first };
   }
-  putLogo(dataB64) {
+  putAsset(name, dataB64) {
     this.assertActive();
+    const max = ASSET_LIMITS[name];
+    if (!max) throw new Error('Unknown upload');
     let bytes; try { bytes = b64.dec(String(dataB64)); } catch { throw new Error('That file could not be read'); }
-    if (bytes.length > LOGO_MAX) throw new Error('Logo must be under 300 KB');
+    if (bytes.length > max) throw new Error(`${name === 'logo' ? 'Logo' : 'Photo'} must be under ${Math.round(max / 1000)} KB`);
     const mime = sniffImage(bytes);
-    if (!mime) throw new Error('Logo must be a PNG, JPEG or WebP image');
+    if (!mime) throw new Error('Please upload a PNG, JPEG or WebP image');
     this.exec('INSERT INTO assets (name, mime, data_b64, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET mime = excluded.mime, data_b64 = excluded.data_b64, updated_at = excluded.updated_at',
-      'logo', mime, b64.enc(bytes), nowIso());
-    this.log('You', 'Uploaded a logo', mime);
+      name, mime, b64.enc(bytes), nowIso());
+    this.log('You', name === 'logo' ? 'Uploaded a logo' : 'Uploaded a photo', mime);
     return { ok: true, mime };
   }
+  removeAsset(name) { this.exec('DELETE FROM assets WHERE name = ?', String(name)); this.log('You', `Removed your ${name === 'logo' ? 'logo' : 'photo'}`); return { ok: true }; }
   // Public site: only the published snapshot, never drafts.
   published() {
     const p = this.profileOf('published');
     if (!p || this.meta().status !== 'live') return null;
-    return { profile: p, workflows: this.workflows(), hasLogo: !!this.exec('SELECT 1 AS ok FROM assets WHERE name = ?', 'logo')[0] };
+    const has = (n) => !!this.exec('SELECT 1 AS ok FROM assets WHERE name = ?', n)[0];
+    return { profile: p, workflows: this.workflows(), hasLogo: has('logo'), hasHero: has('hero') };
   }
-  logo() { const r = this.exec('SELECT mime, data_b64 FROM assets WHERE name = ?', 'logo')[0]; return r ? { mime: r.mime, data: r.data_b64 } : null; }
+  asset(name) { const r = this.exec('SELECT mime, data_b64 FROM assets WHERE name = ?', String(name))[0]; return r ? { mime: r.mime, data: r.data_b64 } : null; }
 
   // ---------- key vault (write-only) ----------
   allowedSecret(name) { const def = SECRET_NAMES[name]; return def && this.workflows().some((w) => WORKFLOW_DEFS[w].access.includes(def)) ? def : null; }
@@ -225,7 +230,7 @@ export class WorkspaceStore {
     const s = this.state();
     this.log('You', 'Downloaded a copy of your data');
     return { exported_at: nowIso(), business: s.business, status: s.status, workflows: s.workflows, settings: s.draft, published_settings: this.profileOf('published'),
-      logo: s.logo, keys: s.secrets.filter((k) => k.set).map((k) => ({ name: k.name, saved: k.updatedAt, note: 'Key values are never exported. You have the originals.' })),
+      logo: s.logo, photo: s.hero, keys: s.secrets.filter((k) => k.set).map((k) => ({ name: k.name, saved: k.updatedAt, note: 'Key values are never exported. You have the originals.' })),
       security_report: s.report, access_log: s.audit };
   }
   async destroy() {
@@ -239,4 +244,4 @@ export class WorkspaceStore {
 
 // Methods callable through the workspace boundary (Durable Object RPC / local adapter). Anything else is refused.
 export const WORKSPACE_METHODS = new Set(['init', 'createInvite', 'acceptInvite', 'login', 'checkSession', 'logout', 'state', 'staffSummary', 'saveProfile',
-  'putLogo', 'published', 'logo', 'putSecret', 'deleteSecret', 'verifySecret', 'runSecurityScan', 'exportData', 'destroy']);
+  'putAsset', 'removeAsset', 'published', 'asset', 'putSecret', 'deleteSecret', 'verifySecret', 'runSecurityScan', 'exportData', 'destroy']);

@@ -1,6 +1,7 @@
-// Client portal: the client enters their own information, keys and branding, previews their site, and launches it.
-// Everything here is stored in the client's own encrypted workspace; nothing is sent to AI services.
-import { renderSite } from '/site-template.js';
+// Client portal — a guided website builder. The client answers a few friendly questions, picks a design, and
+// watches their site come together in a live preview. Everything is stored in the client's own encrypted
+// workspace; nothing is sent to AI services.
+import { renderSite, TEMPLATES, resolveDesign } from '/site-template.js';
 import { UNIVERSAL_SECURITY } from '/workflows.js';
 
 const $ = (s) => document.querySelector(s);
@@ -21,166 +22,321 @@ const api = async (path, body) => {
   return data;
 };
 const when = (iso) => (iso ? new Date(iso).toLocaleString() : '');
+const lines = (t) => String(t ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
 
-const PRIVACY = () => h('div', { class: 'privacy' },
-  h('strong', {}, '🔒 Private by design. '),
-  'What you enter here is kept in your own separate, encrypted workspace — not in our sales systems. ',
-  h('strong', {}, 'It is never sent to AI services'), ' (like ChatGPT or Claude). Our setup system uses it only to build and connect your tools, and you can change, download or delete it at any time.');
+const PRIVACY = (compact = false) => h('div', { class: `privacy${compact ? ' compact' : ''}` },
+  h('span', { class: 'lock' }, '🔒'), h('div', {}, h('strong', {}, 'Private by design. '),
+    'Everything here is kept in your own separate, encrypted workspace — not in our sales systems — and is ',
+    h('strong', {}, 'never sent to AI services'), '. You can change, download or delete it at any time.'));
 
-let state = null, tab = 'setup', draft = {};
+let state = null, draft = {}, view = 'build', step = 0, device = 'desktop';
 const slugFromPath = () => location.pathname.split('/')[2] ?? '';
 
 // ---------- sign-in ----------
+function authShell(...kids) { $('#app').replaceChildren(h('div', { class: 'auth' }, h('div', { class: 'auth-card' }, ...kids), PRIVACY())); }
 function renderAccept(invite) {
   const out = h('p', { class: 'error' });
-  const form = h('form', { class: 'card login', onsubmit: async (e) => {
+  const form = h('form', { onsubmit: async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(form));
     if (f.password !== f.confirm) { out.textContent = 'Passwords do not match.'; return; }
     try { const r = await api('/api/portal/accept', { invite, email: f.email, password: f.password }); history.replaceState(null, '', `/portal/${r.slug}`); load(); }
     catch (x) { out.textContent = x.message; }
-  } }, h('h2', {}, 'Welcome! Create your sign-in'),
-  h('p', { class: 'muted small' }, 'This portal is yours. Only you can sign in to it, with the email and password you choose now.'),
-  h('input', { name: 'email', type: 'email', placeholder: 'Your email', required: true, autocomplete: 'email' }),
-  h('input', { name: 'password', type: 'password', placeholder: 'Choose a password (10+ characters)', minlength: 10, required: true, autocomplete: 'new-password' }),
-  h('input', { name: 'confirm', type: 'password', placeholder: 'Repeat password', required: true, autocomplete: 'new-password' }),
-  h('button', {}, 'Create my portal'), out);
-  $('#app').replaceChildren(PRIVACY(), form);
+  } }, h('h1', {}, 'Welcome.'), h('p', { class: 'muted' }, 'Let\'s build your new website together. First, create the sign-in only you will use.'),
+  h('label', { class: 'f' }, 'Your email', h('input', { name: 'email', type: 'email', required: true, autocomplete: 'email' })),
+  h('label', { class: 'f' }, 'Choose a password', h('input', { name: 'password', type: 'password', minlength: 10, required: true, autocomplete: 'new-password', placeholder: 'At least 10 characters' })),
+  h('label', { class: 'f' }, 'Repeat password', h('input', { name: 'confirm', type: 'password', required: true, autocomplete: 'new-password' })),
+  h('button', { class: 'cta wide' }, 'Get started →'), out);
+  authShell(form);
 }
-
 function renderLogin(msg) {
   const out = h('p', { class: 'error' }, msg ?? '');
-  const form = h('form', { class: 'card login', onsubmit: async (e) => {
+  const form = h('form', { onsubmit: async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(form));
     try { await api('/api/portal/login', f); history.replaceState(null, '', `/portal/${f.slug}`); load(); } catch (x) { out.textContent = x.message; }
-  } }, h('h2', {}, 'Sign in to your portal'),
-  h('input', { name: 'slug', placeholder: 'Portal name (from your invite)', required: true, value: slugFromPath() }),
-  h('input', { name: 'email', type: 'email', placeholder: 'Email', required: true, autocomplete: 'username' }),
-  h('input', { name: 'password', type: 'password', placeholder: 'Password', required: true, autocomplete: 'current-password' }),
-  h('button', {}, 'Sign in'), out, h('p', { class: 'muted small' }, 'Forgot your password? Ask us for a new invite link — it lets you set a new one.'));
-  $('#app').replaceChildren(PRIVACY(), form);
+  } }, h('h1', {}, 'Welcome back.'),
+  h('label', { class: 'f' }, 'Portal name', h('input', { name: 'slug', required: true, value: slugFromPath() })),
+  h('label', { class: 'f' }, 'Email', h('input', { name: 'email', type: 'email', required: true, autocomplete: 'username' })),
+  h('label', { class: 'f' }, 'Password', h('input', { name: 'password', type: 'password', required: true, autocomplete: 'current-password' })),
+  h('button', { class: 'cta wide' }, 'Sign in'), out, h('p', { class: 'muted small' }, 'Forgot your password? Ask us for a new invite link.'));
+  authShell(form);
 }
 
-// ---------- main ----------
+// ---------- load ----------
 async function load() {
   const invite = location.hash.match(/invite=([0-9a-f]{32}\.[0-9a-f]{48})/)?.[1];
   try { state = await api('/api/portal/state'); }
   catch (e) { if (e.status === 401) return invite ? renderAccept(invite) : renderLogin(); return renderLogin(e.message); }
   if (invite) history.replaceState(null, '', `/portal/${state.slug}`); // never keep the invite token in the address bar
   draft = { ...state.draft };
-  $('#who').replaceChildren(`${state.business} `, h('button', { class: 'link', onclick: async () => { await api('/api/portal/logout', {}); renderLogin(); } }, 'Sign out'));
+  $('#who').replaceChildren(h('span', {}, state.business), h('button', { class: 'link', onclick: async () => { await api('/api/portal/logout', {}); renderLogin(); } }, 'Sign out'));
   render();
 }
 
 function render() {
-  const tabs = [['setup', 'Your setup'], ['access', 'Keys & access'], ['security', 'Security check'], ['data', 'Your data']];
-  $('#app').replaceChildren(PRIVACY(),
-    state.live ? h('p', { class: 'banner' }, '✅ Your site is live: ', h('a', { href: state.siteUrl, target: '_blank', rel: 'noopener' }, `${location.origin}${state.siteUrl}`), ' — changes you publish appear there right away.') : null,
-    h('nav', { class: 'tabs' }, tabs.map(([k, l]) => h('button', { type: 'button', class: tab === k ? 'on' : '', onclick: () => { tab = k; render(); } }, l))),
-    { setup: renderSetup, access: renderAccess, security: renderSecurity, data: renderData }[tab]());
+  const views = [['build', state.live ? 'Edit your site' : 'Build your site'], ['access', 'Keys & access'], ['security', 'Security check'], ['data', 'Your data']];
+  $('#app').replaceChildren(
+    h('div', { class: 'topline' },
+      h('nav', { class: 'views' }, views.map(([k, l]) => h('button', { type: 'button', class: view === k ? 'on' : '', onclick: () => { view = k; render(); } }, l))),
+      state.live ? h('a', { class: 'live-pill', href: state.siteUrl, target: '_blank', rel: 'noopener' }, h('i'), 'Live — view site ↗') : null),
+    { build: renderBuilder, access: renderAccess, security: renderSecurity, data: renderData }[view]());
 }
 
-// ---------- setup + live preview ----------
-function field(f) {
-  const v = draft[f.key] ?? f.default ?? '';
-  const on = (e) => { draft[f.key] = e.target.value; schedulePreview(); };
-  const input = f.type === 'textarea' ? h('textarea', { name: f.key, placeholder: f.placeholder ?? '', maxlength: f.max, oninput: on, value: v })
-    : f.type === 'select' ? h('select', { name: f.key, onchange: on }, Object.entries(f.options).map(([k, l]) => h('option', { value: k, selected: String(v) === k }, l)))
-      : h('input', { name: f.key, type: f.type === 'tel' ? 'tel' : f.type === 'color' ? 'color' : f.type === 'email' ? 'email' : f.type === 'url' ? 'url' : 'text',
-        placeholder: f.placeholder ?? '', maxlength: f.max, value: v, oninput: on });
-  return h('label', { class: 'field' }, h('span', {}, f.label, f.required ? ' *' : ''), input, f.help ? h('small', { class: 'muted' }, f.help) : null);
+// ---------- builder ----------
+const STEPS = [
+  { id: 'basics', short: 'Basics', title: 'The basics', sub: 'Who you are and how customers reach you.' },
+  { id: 'services', short: 'Services', title: 'What you do', sub: 'Your services and why customers choose you.' },
+  { id: 'design', short: 'Design', title: 'Pick a design', sub: 'Every option is designed to look great together.' },
+  { id: 'photos', short: 'Photos', title: 'Logo & photo', sub: 'Optional, but a real photo makes a big difference.' },
+  { id: 'details', short: 'Details', title: 'Finishing touches', sub: 'About you, hours and common questions.' },
+  { id: 'launch', short: 'Launch', title: 'Review & launch', sub: 'Take a look — you can change anything later.' },
+];
+const REQUIRED = [['business.name', 'Business name'], ['business.phone', 'Phone number'], ['business.city', 'City'], ['business.services', 'At least one service']];
+const missing = () => REQUIRED.filter(([k]) => !String(draft[k] ?? '').trim()).map(([, l]) => l);
+const fieldDef = (key) => state.fields.flatMap((s) => s.fields).find((f) => f.key === key) ?? { key, label: key };
+
+let saveTimer, saveEl, frames = [];
+function changed() {
+  refreshPreviews();
+  clearTimeout(saveTimer);
+  if (saveEl) saveEl.textContent = 'Saving…';
+  saveTimer = setTimeout(async () => {
+    try { await api('/api/portal/profile', { profile: draft, publish: false }); if (saveEl) saveEl.textContent = 'All changes saved'; }
+    catch (x) { if (saveEl) saveEl.textContent = x.message; }
+  }, 900);
+}
+const set = (k, v) => { draft[k] = v; changed(); };
+
+function input(key, { type = 'text', placeholder, rows } = {}) {
+  const f = fieldDef(key);
+  const attrs = { name: key, placeholder: placeholder ?? f.placeholder ?? '', maxlength: f.max, value: draft[key] ?? '', oninput: (e) => set(key, e.target.value) };
+  const el = rows ? h('textarea', { ...attrs, rows }) : h('input', { ...attrs, type });
+  return h('label', { class: 'f' }, h('span', {}, f.label, f.required ? '' : h('em', {}, ' optional')), el, f.help ? h('small', {}, f.help) : null);
 }
 
-let previewTimer, frame;
-const previewHtml = () => renderSite(draft, { logoSrc: state.logo, workflows: state.workflows });
-let missingEl;
-const missingNow = () => state.fields.flatMap((s) => s.fields).filter((f) => f.required && !String(draft[f.key] ?? '').trim()).map((f) => f.label);
-const showMissing = () => { if (missingEl) missingEl.textContent = !state.live && missingNow().length ? `Still needed before launch: ${missingNow().join(', ')}` : ''; };
-function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(() => { if (frame) frame.srcdoc = previewHtml(); showMissing(); }, 200); }
-
-function renderSetup() {
-  const out = h('p', { class: 'small' });
-  const label = (sec) => state.services.find((s) => s.id === sec)?.label ?? sec;
-  const save = async (publish) => {
-    try {
-      const r = await api('/api/portal/profile', { profile: draft, publish });
-      out.className = 'small ok'; out.textContent = r.published ? (r.first ? '🎉 Your site is live!' : 'Published — your site is updated.') : 'Draft saved.';
-      const keep = tab; await load(); tab = keep;
-    } catch (x) { out.className = 'small error'; out.textContent = x.message; }
+function chipList(key, suggestions = [], max = 12) {
+  const wrap = h('div', { class: 'chiplist' });
+  const draw = () => {
+    const items = lines(draft[key]);
+    const add = h('input', { placeholder: fieldDef(key).placeholder ?? 'Type and press Enter', onkeydown: (e) => {
+      if (e.key === 'Enter' && e.target.value.trim()) { e.preventDefault(); if (items.length < max) set(key, [...items, e.target.value.trim().slice(0, 80)].join('\n')); draw(); wrap.querySelector('input').focus(); }
+    } });
+    wrap.replaceChildren(h('div', { class: 'chips' }, items.map((t, i) => h('span', { class: 'chip-x' }, t,
+      h('button', { type: 'button', 'aria-label': `Remove ${t}`, onclick: () => { set(key, items.filter((_, j) => j !== i).join('\n')); draw(); } }, '×'))), items.length < max ? add : null),
+      suggestions.filter((s) => !items.includes(s)).length && items.length < max ? h('div', { class: 'suggest' }, h('small', {}, 'Suggestions'),
+        suggestions.filter((s) => !items.includes(s)).map((s) => h('button', { type: 'button', onclick: () => { set(key, [...items, s].join('\n')); draw(); } }, `+ ${s}`))) : null);
   };
-  const logo = h('label', { class: 'field' }, h('span', {}, 'Logo (PNG, JPEG or WebP, under 300 KB)'),
-    h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', onchange: async (e) => {
-      const file = e.target.files[0]; if (!file) return;
-      if (file.size > 300_000) { out.className = 'small error'; out.textContent = 'Logo must be under 300 KB.'; return; }
-      const u8 = new Uint8Array(await file.arrayBuffer()); let bin = '';
-      for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode(...u8.subarray(i, i + 0x8000));
-      const b64 = btoa(bin);
-      try { await api('/api/portal/logo', { data: b64 }); state.logo = `data:${file.type};base64,${b64}`; schedulePreview(); out.className = 'small ok'; out.textContent = 'Logo uploaded.'; }
-      catch (x) { out.className = 'small error'; out.textContent = x.message; }
-    } }));
-  frame = h('iframe', { class: 'preview', sandbox: '', title: 'Preview of your site' }); // sandbox: no scripts, no navigation
-  frame.srcdoc = previewHtml();
-  queueMicrotask(showMissing);
-  return h('div', { class: 'setup-grid' },
-    h('form', { class: 'card', onsubmit: (e) => e.preventDefault() },
-      state.fields.map((s) => h('fieldset', {}, h('legend', {}, s.section.includes(' ') ? s.section : label(s.section)), s.section === 'Look & feel' ? logo : null, s.fields.map(field))),
-      (missingEl = h('p', { class: 'muted small' })),
-      h('div', { class: 'actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => save(false) }, 'Save draft'),
-        h('button', { type: 'button', onclick: () => {
-          if (state.live || confirm('Launch your site with what you see in the preview? You can change it any time.')) save(true);
-        } }, state.live ? 'Publish changes' : 'Review & launch my site')), out),
-    h('div', { class: 'preview-wrap' }, h('div', { class: 'muted small' }, 'Live preview — this is exactly what will be published'), frame));
+  draw();
+  const f = fieldDef(key);
+  return h('div', { class: 'f' }, h('span', {}, f.label, f.required ? '' : h('em', {}, ' optional')), f.help ? h('small', {}, f.help) : null, wrap);
+}
+
+function faqEditor() {
+  const wrap = h('div', { class: 'faq-ed' });
+  const pairs = () => lines(draft['content.faq']).map((l) => { const [q, ...a] = l.split('|'); return [q.trim(), a.join('|').trim()]; });
+  const save = (ps) => set('content.faq', ps.filter(([q]) => q).map(([q, a]) => `${q.replace(/\|/g, '/')} | ${a.replace(/\n/g, ' ')}`).join('\n'));
+  const draw = () => {
+    const ps = pairs();
+    wrap.replaceChildren(...ps.map(([q, a], i) => h('div', { class: 'qa' },
+      h('input', { value: q, placeholder: 'Question', oninput: (e) => { ps[i][0] = e.target.value; save(ps); } }),
+      h('textarea', { rows: 2, value: a, placeholder: 'Answer', oninput: (e) => { ps[i][1] = e.target.value; save(ps); } }),
+      h('button', { type: 'button', class: 'x', 'aria-label': 'Remove question', onclick: () => { save(ps.filter((_, j) => j !== i)); draw(); } }, '×'))),
+    ps.length < 8 ? h('button', { type: 'button', class: 'ghost-btn', onclick: () => { save([...ps, ['New question', '']]); draw(); wrap.querySelectorAll('.qa input')[ps.length]?.select(); } }, '+ Add a question') : null);
+  };
+  draw();
+  return h('div', { class: 'f' }, h('span', {}, 'Common questions', h('em', {}, ' optional')), h('small', {}, 'Shown as a tidy, expandable list on your site.'), wrap);
+}
+
+// Images are resized in the browser before upload — fast pages, small files, no stretched logos.
+async function resizeImage(file, { max, type, quality = 0.85, limit }) {
+  const img = await createImageBitmap(file);
+  const scale = Math.min(1, max / Math.max(img.width, img.height));
+  const c = document.createElement('canvas'); c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  for (let q = quality; q > 0.4; q -= 0.1) {
+    const blob = await new Promise((r) => c.toBlob(r, type, q));
+    if (blob.size <= limit || type === 'image/png') return blob;
+  }
+  return new Promise((r) => c.toBlob(r, type, 0.4));
+}
+const toB64 = async (blob) => { const u8 = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); };
+
+function dropZone(name, title, hint) {
+  const out = h('small', { class: 'status' });
+  const current = name === 'logo' ? state.logo : state.hero;
+  const upload = async (file) => {
+    if (!file || !/^image\/(png|jpeg|webp)$/.test(file.type)) { out.textContent = 'Please choose a PNG, JPEG or WebP image.'; return; }
+    out.textContent = 'Optimizing…';
+    try {
+      const blob = name === 'logo' ? await resizeImage(file, { max: 600, type: file.type === 'image/png' ? 'image/png' : 'image/webp', limit: 280_000 })
+        : await resizeImage(file, { max: 2000, type: 'image/jpeg', quality: 0.84, limit: 850_000 });
+      const b64 = await toB64(blob);
+      await api('/api/portal/asset', { name, data: b64 });
+      state[name === 'logo' ? 'logo' : 'hero'] = `data:${blob.type};base64,${b64}`;
+      renderBuilderBody(); refreshPreviews();
+    } catch (x) { out.textContent = x.message; }
+  };
+  const fileIn = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', hidden: true, onchange: (e) => upload(e.target.files[0]) });
+  return h('div', { class: 'drop', ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('over'); }, ondragleave: (e) => e.currentTarget.classList.remove('over'),
+    ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('over'); upload(e.dataTransfer.files[0]); } },
+  current ? h('img', { src: current, alt: '', class: name }) : h('div', { class: 'ph' }, name === 'logo' ? 'Aa' : '▦'),
+  h('div', {}, h('strong', {}, title), h('small', {}, hint), h('div', { class: 'row' },
+    h('button', { type: 'button', class: 'ghost-btn', onclick: () => fileIn.click() }, current ? 'Replace' : 'Choose file'),
+    current ? h('button', { type: 'button', class: 'link-btn', onclick: async () => { await api('/api/portal/asset', { name, remove: true }); state[name === 'logo' ? 'logo' : 'hero'] = null; renderBuilderBody(); refreshPreviews(); } }, 'Remove') : null), out), fileIn);
+}
+
+function headlineIdeas() {
+  const svc = lines(draft['business.services'])[0]?.toLowerCase(), city = draft['business.city'], since = draft['business.since'];
+  return [svc && city && `${svc[0].toUpperCase()}${svc.slice(1)} done right in ${city}.`, city && svc && `${city}'s trusted name in ${svc}.`,
+    'Honest work. Fair prices. Real people.', since && `Proudly serving our neighbors since ${since}.`].filter(Boolean).slice(0, 3);
+}
+
+function stepBody(id) {
+  if (id === 'basics') {
+    const ideas = h('div', { class: 'suggest' });
+    const drawIdeas = () => ideas.replaceChildren(h('small', {}, 'Headline ideas'), ...headlineIdeas().map((t) => h('button', { type: 'button', onclick: () => { set('business.tagline', t); $('[name="business.tagline"]').value = t; } }, t)));
+    drawIdeas();
+    return [input('business.name'), h('div', { class: 'two' }, input('business.phone', { type: 'tel', placeholder: '(512) 555-0100' }), input('business.city', { placeholder: 'Round Rock' })),
+      input('business.tagline'), ideas, input('business.since', { type: 'text', placeholder: '2011' })];
+  }
+  if (id === 'services') return [chipList('business.services', [], 12),
+    chipList('business.highlights', ['Licensed & insured', 'Family owned', 'Free estimates', 'Upfront pricing', 'Same-day service', 'Satisfaction guaranteed', 'Locally owned', 'Open 7 days'], 4)];
+  if (id === 'design') {
+    const d = resolveDesign(draft);
+    return [h('div', { class: 'f' }, h('span', {}, 'Design'), h('div', { class: 'templates' }, Object.entries(TEMPLATES).map(([tid, t]) => {
+      const fr = h('iframe', { sandbox: '', tabindex: '-1', 'aria-hidden': 'true', class: 'thumb' });
+      frames.push({ el: fr, design: { 'brand.template': tid } });
+      return h('button', { type: 'button', class: `tpl${d.tid === tid ? ' on' : ''}`, onclick: () => { draft['brand.template'] = tid; draft['brand.palette'] = Object.keys(t.palettes)[0]; draft['brand.fonts'] = Object.keys(t.fonts)[0]; changed(); renderBuilderBody(); } },
+        h('div', { class: 'thumb-wrap' }, fr), h('strong', {}, t.name), h('small', {}, t.tagline));
+    }))),
+    h('div', { class: 'f' }, h('span', {}, 'Colors'), h('small', {}, 'Hand-picked for this design — every combination is contrast-checked for readability.'),
+      h('div', { class: 'palettes' }, Object.entries(d.t.palettes).map(([pid, p]) => h('button', { type: 'button', class: `pal${d.pid === pid ? ' on' : ''}`, onclick: () => { set('brand.palette', pid); renderBuilderBody(); } },
+        h('span', { class: 'sw' }, [p.bg, p.primary, p.g2 ?? p.accent].map((c) => { const i = h('i'); i.style.background = c; return i; })), p.name)))),
+    h('div', { class: 'f' }, h('span', {}, 'Typography'), h('div', { class: 'fonts' }, Object.entries(d.t.fonts).map(([fid, f]) => {
+      const sample = h('b', { class: `ff-${f.display}` }, 'Aa'); return h('button', { type: 'button', class: `font${d.fid === fid ? ' on' : ''}`, onclick: () => { set('brand.fonts', fid); renderBuilderBody(); } }, sample, f.name);
+    })))];
+  }
+  if (id === 'photos') return [dropZone('logo', 'Your logo', 'PNG with a transparent background looks best. We resize it for you.'),
+    dropZone('hero', 'A photo of your work or team', 'Real photos build trust. Landscape works best — we optimize it automatically.')];
+  if (id === 'details') {
+    const extras = state.fields.filter((s) => s.section !== 'Your business' && s.section !== 'What you offer' && s.section !== 'Look & feel' && s.section !== 'Links');
+    return [input('business.about', { rows: 4 }), faqEditor(), input('business.hours', { rows: 3 }), h('div', { class: 'two' }, input('business.email', { type: 'email' }), input('business.address')),
+      h('details', { class: 'more' }, h('summary', {}, 'Links & extras'), input('links.booking', { type: 'url', placeholder: 'https://' }), input('links.review', { type: 'url', placeholder: 'https://' }),
+        input('links.ordering', { type: 'url', placeholder: 'https://' }), h('div', { class: 'two' }, input('links.facebook', { type: 'url', placeholder: 'https://' }), input('links.instagram', { type: 'url', placeholder: 'https://' })),
+        input('links.website', { type: 'url', placeholder: 'https://' })),
+      extras.length ? h('details', { class: 'more', open: true }, h('summary', {}, 'About the services you ordered'),
+        extras.flatMap((s) => s.fields.map((f) => f.type === 'select'
+          ? h('label', { class: 'f' }, h('span', {}, f.label), h('select', { name: f.key, onchange: (e) => set(f.key, e.target.value) }, Object.entries(f.options).map(([k, l]) => h('option', { value: k, selected: String(draft[f.key] ?? f.default) === k }, l))))
+          : input(f.key, { type: f.type === 'email' ? 'email' : f.type === 'tel' ? 'tel' : 'text', rows: f.type === 'textarea' ? 3 : undefined })))) : null];
+  }
+  // launch
+  const m = missing();
+  const out = h('p', { class: 'status' });
+  return [h('ul', { class: 'checklist' }, REQUIRED.map(([k, l]) => h('li', { class: String(draft[k] ?? '').trim() ? 'done' : '' }, l)),
+    h('li', { class: state.hero ? 'done' : 'opt' }, 'A photo (recommended)'), h('li', { class: lines(draft['business.highlights']).length ? 'done' : 'opt' }, 'Why customers choose you (recommended)')),
+  h('button', { type: 'button', class: 'cta wide', disabled: m.length > 0, onclick: async () => {
+    try { const r = await api('/api/portal/profile', { profile: draft, publish: true }); out.textContent = r.first ? '🎉 Your site is live!' : 'Published.'; await load(); }
+    catch (x) { out.textContent = x.message; }
+  } }, state.live ? 'Publish changes' : 'Launch my site'), m.length ? h('p', { class: 'status' }, `Still needed: ${m.join(', ')}`) : null, out,
+  h('p', { class: 'muted small' }, 'You can come back and change anything — updates go live the moment you publish.')];
+}
+
+let bodyEl, previewEl;
+function renderBuilderBody() {
+  frames = [];
+  const s = STEPS[step];
+  bodyEl.replaceChildren(h('div', { class: 'step-head' }, h('small', {}, `Step ${step + 1} of ${STEPS.length}`), h('h2', {}, s.title), h('p', {}, s.sub)),
+    h('div', { class: 'step-body' }, stepBody(s.id)),
+    h('div', { class: 'step-nav' }, step > 0 ? h('button', { type: 'button', class: 'ghost-btn', onclick: () => go(step - 1) }, '← Back') : h('span'),
+      (saveEl = h('small', { class: 'saved' }, 'All changes saved')),
+      step < STEPS.length - 1 ? h('button', { type: 'button', class: 'cta', onclick: () => go(step + 1) }, 'Continue →') : h('span')));
+  document.querySelectorAll('.stepper button').forEach((b, i) => { b.classList.toggle('on', i === step); b.classList.toggle('done', i < step); });
+  refreshPreviews();
+}
+const go = (i) => { step = i; renderBuilderBody(); $('.builder .panel').scrollTop = 0; };
+
+function renderBuilder() {
+  bodyEl = h('div', { class: 'panel-inner' });
+  const mainFrame = h('iframe', { sandbox: '', title: 'Live preview of your site', class: 'site' });
+  previewEl = h('div', { class: `device ${device}` }, mainFrame);
+  const toggle = h('div', { class: 'device-toggle' }, [['desktop', 'Desktop'], ['phone', 'Phone']].map(([k, l]) =>
+    h('button', { type: 'button', class: device === k ? 'on' : '', onclick: () => { device = k; previewEl.className = `device ${k}`; toggle.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.textContent === l)); fit(); } }, l)));
+  const el = h('div', { class: 'builder' },
+    h('aside', { class: 'panel' }, h('nav', { class: 'stepper' }, STEPS.map((s, i) => h('button', { type: 'button', onclick: () => go(i), title: s.title }, h('b', {}, i + 1), h('span', {}, s.short)))), bodyEl),
+    h('section', { class: 'stage' }, h('div', { class: 'stage-bar' }, h('span', { class: 'dots' }, h('i'), h('i'), h('i')), h('span', { class: 'url' }, `${location.host}/s/${state.slug}`), toggle), h('div', { class: 'stage-view' }, previewEl)));
+  queueMicrotask(() => { renderBuilderBody(); fit(); });
+  return el;
+}
+
+// Scale the 1280px-wide desktop (or 390px phone) preview to fit the stage.
+function fit() {
+  const view = $('.stage-view'); if (!view || !previewEl) return;
+  const w = device === 'desktop' ? 1280 : 390, hgt = device === 'desktop' ? 860 : 844;
+  const scale = Math.min(1, view.clientWidth / w, device === 'phone' ? (view.clientHeight - 56) / hgt : 1);
+  const f = previewEl.firstChild; f.style.width = `${w}px`; f.style.height = `${device === 'desktop' ? view.clientHeight / scale : hgt}px`;
+  previewEl.style.transform = `scale(${scale})`; previewEl.style.width = `${w}px`;
+}
+addEventListener('resize', () => fit());
+
+let previewTimer;
+function refreshPreviews() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(() => {
+    const assets = { logoSrc: state.logo, heroSrc: state.hero, workflows: state.workflows };
+    const main = previewEl?.firstChild; if (main) main.srcdoc = renderSite(draft, assets);
+    for (const fr of frames) fr.el.srcdoc = renderSite({ ...draft, ...fr.design, 'brand.palette': undefined, 'brand.fonts': undefined }, assets);
+  }, 120);
 }
 
 // ---------- keys & access ----------
 function renderAccess() {
-  return h('div', {}, h('div', { class: 'privacy vault' }, h('strong', {}, '🔑 Keys are write-only. '),
-    'Once saved, a key can\'t be viewed by anyone in our tools — including you — only replaced or deleted. Keys are encrypted with a key unique to your workspace, used only by our setup system (never an AI service), and every use appears in your access log under "Your data".'),
-  h('h3', {}, 'What we\'ll do for every setup'), h('ul', {}, UNIVERSAL_SECURITY.map((x) => h('li', {}, x))),
+  return h('div', { class: 'page' }, h('div', { class: 'privacy vault' }, h('span', { class: 'lock' }, '🔑'), h('div', {}, h('strong', {}, 'Keys are write-only. '),
+    'Once saved, a key can\'t be viewed by anyone in our tools — including you — only replaced or deleted. Keys are encrypted with a key unique to your workspace, used only by our setup system (never an AI service), and every use appears in your access log.')),
+  h('section', { class: 'card' }, h('h3', {}, 'Our promise for every setup'), h('ul', { class: 'ticks' }, UNIVERSAL_SECURITY.map((x) => h('li', {}, x)))),
   state.services.map((svc) => h('section', { class: 'card' }, h('h3', {}, svc.label),
     svc.access.map((a) => {
-      if (a.kind !== 'secret') return h('div', { class: 'access' }, h('strong', {}, a.kind === 'invite' ? '👤 Invite us: ' : '⚙️ You change: ', a.name), h('div', { class: 'muted small' }, a.detail));
+      if (a.kind !== 'secret') return h('div', { class: 'access' }, h('strong', {}, a.kind === 'invite' ? 'Invite us — ' : 'You change — ', a.name), h('p', {}, a.detail));
       const s = state.secrets.find((x) => x.name === a.name);
-      const out = h('span', { class: 'small' }, s.verifyResult ?? '');
-      const input = h('input', { type: 'password', autocomplete: 'off', placeholder: s.set ? 'Paste a new key to replace it' : 'Paste key' });
-      return h('div', { class: 'access' }, h('strong', {}, '🔑 ', a.label, a.optional ? ' (optional)' : ''), h('div', { class: 'muted small' }, a.detail),
-        h('div', { class: 'small' }, s.set ? `Saved ${when(s.updatedAt)}${s.verifiedAt ? ` · tested ${when(s.verifiedAt)}` : ''}` : 'Not saved'),
-        h('div', { class: 'row-actions' }, input,
-          h('button', { type: 'button', onclick: async () => { try { await api('/api/portal/secrets', { name: a.name, value: input.value }); input.value = ''; await load(); tab = 'access'; render(); } catch (x) { out.textContent = x.message; } } }, 'Save'),
-          s.set && s.canVerify ? h('button', { type: 'button', class: 'ghost', onclick: async () => { out.textContent = 'Testing…'; try { const r = await api('/api/portal/secrets/verify', { name: a.name }); out.textContent = r.message; } catch (x) { out.textContent = x.message; } } }, 'Test connection') : null,
-          s.set ? h('button', { type: 'button', class: 'ghost', onclick: async () => { if (!confirm('Delete this key?')) return; await api('/api/portal/secrets/delete', { name: a.name }); await load(); tab = 'access'; render(); } }, 'Delete') : null, out));
+      const out = h('span', { class: 'status' }, s.verifyResult ?? '');
+      const field = h('input', { type: 'password', autocomplete: 'off', placeholder: s.set ? 'Paste a new key to replace it' : 'Paste key' });
+      return h('div', { class: 'access' }, h('strong', {}, a.label, a.optional ? h('em', {}, ' optional') : null), h('p', {}, a.detail),
+        h('div', { class: 'small' }, s.set ? `✓ Saved ${when(s.updatedAt)}${s.verifiedAt ? ` · tested ${when(s.verifiedAt)}` : ''}` : 'Not saved'),
+        h('div', { class: 'row' }, field,
+          h('button', { type: 'button', class: 'cta', onclick: async () => { try { await api('/api/portal/secrets', { name: a.name, value: field.value }); field.value = ''; await load(); view = 'access'; render(); } catch (x) { out.textContent = x.message; } } }, 'Save'),
+          s.set && s.canVerify ? h('button', { type: 'button', class: 'ghost-btn', onclick: async () => { out.textContent = 'Testing…'; try { out.textContent = (await api('/api/portal/secrets/verify', { name: a.name })).message; } catch (x) { out.textContent = x.message; } } }, 'Test connection') : null,
+          s.set ? h('button', { type: 'button', class: 'link-btn', onclick: async () => { if (!confirm('Delete this key?')) return; await api('/api/portal/secrets/delete', { name: a.name }); await load(); view = 'access'; render(); } }, 'Delete') : null, out));
     }),
-    h('details', { class: 'small' }, h('summary', {}, 'What we\'ll check and do'), h('ul', {}, svc.security.map((x) => h('li', {}, x))),
-      h('ol', {}, svc.steps.map((x) => h('li', {}, x.title, x.auto ? ' (automatic)' : '')))))));
+    h('details', { class: 'more' }, h('summary', {}, 'What we\'ll check and do'), h('ul', { class: 'ticks' }, svc.security.map((x) => h('li', {}, x))),
+      h('ol', {}, svc.steps.map((x) => h('li', {}, x.title, x.auto ? ' — automatic' : '')))))));
 }
 
 // ---------- security check ----------
 function renderSecurity() {
-  const out = h('p', { class: 'small' });
+  const out = h('p', { class: 'status' });
   const r = state.report;
-  const icon = { pass: '✅', warn: '⚠️', fail: '❌', unknown: '❔' };
-  return h('div', { class: 'card' }, h('h3', {}, 'Security check of your current website & email domain'),
-    h('p', { class: 'muted small' }, 'A read-only check — we never log in to anything. It looks at your site\'s encryption and protective settings, and whether your domain is protected against email spoofing.'),
-    h('button', { type: 'button', onclick: async () => { out.textContent = 'Checking…'; try { await api('/api/portal/scan', {}); await load(); tab = 'security'; render(); } catch (x) { out.textContent = x.message; } } }, r ? 'Run again' : 'Run the check'), out,
-    r ? [h('p', {}, h('strong', {}, `${r.target}: ${r.score ?? '–'}/100`), h('span', { class: 'muted small' }, ` · checked ${when(r.at)}`)),
-      h('ul', { class: 'findings' }, r.findings.map((f) => h('li', {}, `${icon[f.status]} `, h('strong', {}, f.title), h('div', { class: 'small' }, f.detail), f.fix ? h('div', { class: 'small muted' }, `How to fix: ${f.fix}`) : null)))]
-      : h('p', { class: 'muted small' }, 'Add your current website under "Your setup → Links" first.'));
+  const icon = { pass: '✓', warn: '!', fail: '×', unknown: '?' };
+  return h('div', { class: 'page' }, h('section', { class: 'card' }, h('h3', {}, 'Security check'),
+    h('p', { class: 'muted' }, 'A read-only check of your current website and email domain — we never log in to anything.'),
+    h('button', { type: 'button', class: 'cta', onclick: async () => { out.textContent = 'Checking…'; try { await api('/api/portal/scan', {}); await load(); view = 'security'; render(); } catch (x) { out.textContent = x.message; } } }, r ? 'Run again' : 'Run the check'), out,
+    r ? [h('div', { class: 'score' }, h('b', {}, r.score ?? '–'), h('span', {}, `/100 · ${r.target} · ${when(r.at)}`)),
+      h('ul', { class: 'findings' }, r.findings.map((f) => h('li', { class: f.status }, h('i', {}, icon[f.status]), h('div', {}, h('strong', {}, f.title), h('p', {}, f.detail), f.fix ? h('p', { class: 'fix' }, f.fix) : null))))]
+      : h('p', { class: 'muted small' }, 'Add your current website in "Finishing touches → Links & extras" first.')));
 }
 
 // ---------- your data ----------
 function renderData() {
-  const out = h('p', { class: 'small error' });
-  return h('div', {},
-    h('section', { class: 'card' }, h('h3', {}, 'Download your data'), h('p', { class: 'small' }, 'Everything in your workspace as a file you keep. Key values are never included — you have the originals.'),
-      h('a', { class: 'button', href: '/api/portal/export' }, 'Download my data (JSON)')),
-    h('section', { class: 'card' }, h('h3', {}, 'Access log'), h('p', { class: 'muted small' }, 'Every sign-in, change and every time a key was used.'),
-      h('table', {}, h('tbody', {}, state.audit.map((a) => h('tr', {}, h('td', { class: 'small' }, when(a.at)), h('td', {}, a.actor), h('td', {}, a.action), h('td', { class: 'small muted' }, a.detail ?? '')))))),
+  const out = h('p', { class: 'error' });
+  return h('div', { class: 'page' },
+    h('section', { class: 'card' }, h('h3', {}, 'Download your data'), h('p', {}, 'Everything in your workspace as a file you keep. Key values are never included — you have the originals.'),
+      h('a', { class: 'cta', href: '/api/portal/export' }, 'Download my data')),
+    h('section', { class: 'card' }, h('h3', {}, 'Access log'), h('p', { class: 'muted' }, 'Every sign-in, change and every time a key was used.'),
+      h('table', { class: 'log-table' }, h('tbody', {}, state.audit.map((a) => h('tr', {}, h('td', {}, when(a.at)), h('td', {}, a.actor), h('td', {}, a.action, a.detail ? h('small', {}, ` ${a.detail}`) : null)))))),
     h('section', { class: 'card danger' }, h('h3', {}, 'Delete my workspace'),
-      h('p', { class: 'small' }, 'Permanently deletes your settings, logo, keys and access log, and takes your site offline. This cannot be undone.'),
-      h('form', { onsubmit: async (e) => {
+      h('p', {}, 'Permanently deletes your settings, photos, keys and access log, and takes your site offline. This cannot be undone.'),
+      h('form', { class: 'row', onsubmit: async (e) => {
         e.preventDefault(); const confirmText = new FormData(e.target).get('confirm');
-        try { await api('/api/portal/delete', { confirm: confirmText }); $('#app').replaceChildren(h('div', { class: 'card' }, h('h2', {}, 'Your workspace was deleted.'), h('p', {}, 'Everything you entered has been removed.'))); }
+        try { await api('/api/portal/delete', { confirm: confirmText }); authShell(h('h1', {}, 'Deleted.'), h('p', {}, 'Everything you entered has been removed.')); }
         catch (x) { out.textContent = x.message; }
-      } }, h('input', { name: 'confirm', placeholder: `Type "${state.business}" to confirm`, required: true }), ' ', h('button', { class: 'danger-btn' }, 'Delete everything'), out)));
+      } }, h('input', { name: 'confirm', placeholder: `Type "${state.business}" to confirm`, required: true }), h('button', { class: 'danger-btn' }, 'Delete everything')), out));
 }
 
 load();

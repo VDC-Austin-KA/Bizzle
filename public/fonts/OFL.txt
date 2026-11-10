@@ -1,0 +1,6 @@
+Fonts in this folder are licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org):
+- Inter — Copyright The Inter Project Authors (https://github.com/rsms/inter)
+- Cormorant Garamond — Copyright The Cormorant Project Authors (https://github.com/CatharsisFonts/Cormorant)
+- Fraunces — Copyright The Fraunces Project Authors (https://github.com/undercasetype/Fraunces)
+- Manrope — Copyright The Manrope Project Authors (https://github.com/sharanda/manrope)
+Latin subsets, variable weights, downloaded from Google Fonts and self-hosted (no third-party requests).

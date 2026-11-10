@@ -92,6 +92,24 @@ The registry covers all 14 playbook industries in Travis, Williamson and Hays co
 node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))" | npx wrangler secret put WORKSPACE_KEY
 ```
 
+## Client website templates
+
+Clients choose from four curated templates in a six-step builder with a live desktop/phone preview:
+
+| Template | Inspired by |
+|---|---|
+| **Atelier** | Aesop / luxury editorial |
+| **Studio** | Stripe |
+| **Midnight** | Linear dark mode / premium "dark glass" |
+| **Heritage** | Premium trades and hospitality |
+
+Each template comes with:
+- hand-picked palettes only, each passing an automated WCAG contrast test;
+- two typography pairings using self-hosted open-licence fonts;
+- layouts that adapt to whether the client has a photo, highlights or a founding year.
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the references, guard-rails and research sources.
+
 ## Quotes & pricing
 
 - **Public quote builder.** **https://biz.ackerworks.com/quote** needs no login. Customers choose training, done-with-you workflows, locations, a care plan and how to pay, and see a live total with the payment schedule, timeline and separate third-party software estimates beside published market pricing. "Send me this quote" saves the request, creates a lead, and returns a shareable link.

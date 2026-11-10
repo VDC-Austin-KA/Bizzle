@@ -11,7 +11,7 @@ import { throttled, recordFailure } from './auth.js';
 
 const randomId = () => [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
 const slugify = (s) => String(s).toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'site';
-const SITE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+const SITE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
 const scanHits = new Map();
 
 export function portalRoutes({ db, workspaces, secureCookies, origin }) {
@@ -70,9 +70,10 @@ export function portalRoutes({ db, workspaces, secureCookies, origin }) {
       if (r.first) await w.call('runSecurityScan', 'Setup system').catch(() => {}); // first launch: check their existing domain
       return r;
     }],
-    ['POST', /^\/api\/portal\/logo$/, 'public', async ({ req }) => {
+    ['POST', /^\/api\/portal\/asset$/, 'public', async ({ req }) => {
       const { w } = await clientAuth(req);
-      return w.call('putLogo', (await readJson(req)).data);
+      const { name, data, remove } = await readJson(req);
+      return remove ? w.call('removeAsset', name === 'hero' ? 'hero' : 'logo') : w.call('putAsset', name, data);
     }],
     ['POST', /^\/api\/portal\/secrets$/, 'public', async ({ req }) => {
       const { w } = await clientAuth(req);
@@ -115,13 +116,13 @@ export function portalRoutes({ db, workspaces, secureCookies, origin }) {
       const row = await db.get("SELECT id FROM clients WHERE slug = ? AND status = 'live'", slug);
       const pub = row && await ws(row.id).call('published');
       if (!pub) return new Response('Not found', { status: 404, headers: { 'Content-Type': 'text/plain' } });
-      const html = renderSite(pub.profile, { logoSrc: pub.hasLogo ? `/s/${slug}/logo` : null, workflows: pub.workflows });
+      const html = renderSite(pub.profile, { logoSrc: pub.hasLogo ? `/s/${slug}/logo` : null, heroSrc: pub.hasHero ? `/s/${slug}/hero` : null, workflows: pub.workflows });
       return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': SITE_CSP, 'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'strict-origin-when-cross-origin', 'Cache-Control': 'public, max-age=60' } });
     }],
-    ['GET', /^\/s\/([a-z0-9-]{1,40})\/logo$/, 'public', async ({ params: [slug] }) => {
+    ['GET', /^\/s\/([a-z0-9-]{1,40})\/(logo|hero)$/, 'public', async ({ params: [slug, which] }) => {
       const row = await db.get("SELECT id FROM clients WHERE slug = ? AND status = 'live'", slug);
-      const logo = row && await ws(row.id).call('logo');
+      const logo = row && await ws(row.id).call('asset', which);
       if (!logo) return new Response('Not found', { status: 404 });
       return new Response(Uint8Array.from(atob(logo.data), (c) => c.charCodeAt(0)), { headers: { 'Content-Type': logo.mime, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'public, max-age=300' } });
     }],
